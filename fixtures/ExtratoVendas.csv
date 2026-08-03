@@ -1,0 +1,10 @@
+CPF;Nome do cliente;Telefone do Cliente;Código do cliente;Risco;Contrato;Data da Venda;Parcela;Data de vencimento;Valor de vencimento;Total Pago;Valor de quitação;Capital aberto;Desconto de quitação;Situação
+789.008.911-20;Daniel ferreira luz;6684572754;85507592;VENDA SEM ANALISE;1-10494;28/03/2026;4/5;30/07/2026;96.2;488.62;96.2;96.2;null;Vence no mês;
+632.355.101-25;Marcos andre pereira delfino;6684175054;85507517;VENDA SEM ANALISE;1-10525;31/03/2026;4/4;30/07/2026;40;159.99;40;40;null;Vence no mês;
+610.302.101-44;Goires pereira silva santos;6692186091;85508259;VENDA SEM ANALISE;1-10537;31/03/2026;4/4;30/07/2026;123.7;494.96;123.7;123.7;null;Vence no mês;
+020.073.921-27;Sueslley cunha de sousa;6692547483;85507621;VENDA SEM ANALISE;1-11002;24/04/2026;3/4;30/07/2026;50;199.99;50;50;null;Vence no mês;
+181.110.091-00;Fidelez geovado pirez de souza ;66984173121;97601058;VENDA SEM ANALISE;1-11047;28/04/2026;3/3;30/07/2026;146.7;439.96;146.7;146.7;null;Vence no mês;
+741.545.401-49;Charley moreira da silva;6681438359;85508996;C - RISCO MEDIO;1-11562;25/05/2026;2/4;30/07/2026;145;579.9;145;145;null;Vence no mês;
+970.964.401-78;Joelma de sousa freitas;66992130330;85510225;C - RISCO MEDIO;1-11589;27/05/2026;2/4;30/07/2026;157.5;629.94;157.5;157.5;null;Vence no mês;
+348.376.748-79;Geisa natalia moreira de menezes jesus;6696356369;85508208;VENDA SEM ANALISE;1-11739;03/06/2026;1/4;30/07/2026;24.99;99.99;24.99;24.99;null;Vence no mês;
+920.663.721-53;Nelson vieira brito;6692820464;85507769;D - RISCO ALTO;1-12411;27/06/2026;1/4;30/07/2026;202.47;809.97;202.47;202.47;null;Vence no mês;

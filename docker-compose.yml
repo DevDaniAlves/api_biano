@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: biano
+      POSTGRES_PASSWORD: biano
+      POSTGRES_DB: biano
+    volumes:
+      - biano-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biano -d biano"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: .
+    ports:
+      - "3333:3333"
+    env_file:
+      - .env
+    environment:
+      HEADLESS: "true"
+      PORT: "3333"
+      CORS_ORIGIN: "*"
+      DATABASE_URL: postgresql://biano:biano@db:5432/biano?schema=public
+    volumes:
+      - biano-tmp:/app/tmp
+      - biano-uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  biano-pg:
+  biano-tmp:
+  biano-uploads:

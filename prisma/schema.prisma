@@ -1,0 +1,186 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BoletoStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+enum JobStatus {
+  queued
+  running
+  success
+  failed
+}
+
+enum UserRole {
+  admin
+  seller
+}
+
+enum ContactStatus {
+  bot
+  waiting
+  human
+  closed
+}
+
+enum MessageDirection {
+  in
+  out
+}
+
+model ScrapeJob {
+  id           String    @id @default(cuid())
+  status       JobStatus @default(queued)
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  message      String?
+  rowsFound    Int       @default(0)
+  rowsUpserted Int       @default(0)
+  csvPath      String?
+  createdAt    DateTime  @default(now())
+  boletos      Boleto[]
+}
+
+model Boleto {
+  id               String       @id @default(cuid())
+  externalId       String
+  cpf              String
+  clienteNome      String
+  clienteTelefone  String
+  codigoCliente    String
+  risco            String?
+  contrato         String
+  dataVenda        String?
+  parcela          String
+  vencimento       String
+  valorVencimento  Float
+  totalPago        Float?
+  valorQuitacao    Float?
+  capitalAberto    Float?
+  descontoQuitacao Float?
+  situacao         String?
+  status           BoletoStatus @default(pending)
+  dispatchError    String?
+  dispatchedAt     DateTime?
+  collectedAt      DateTime     @default(now())
+  jobId            String?
+  job              ScrapeJob?   @relation(fields: [jobId], references: [id])
+
+  @@unique([contrato, parcela, vencimento])
+  @@index([vencimento, status])
+  @@index([status])
+}
+
+model User {
+  id            String              @id @default(cuid())
+  name          String
+  email         String              @unique
+  passwordHash  String
+  role          UserRole            @default(seller)
+  active        Boolean             @default(true)
+  createdAt     DateTime            @default(now())
+  agents        WhatsAppAgent[]
+  assigned      WhatsAppContact[]   @relation("AssignedContacts")
+  offered       WhatsAppContact[]   @relation("OfferedContacts")
+  messages      WhatsAppMessage[]
+  unavailabilities UserUnavailability[]
+}
+
+/** Janelas de inatividade do vendedor (não recebe oferta na fila). */
+model UserUnavailability {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /** 0=Dom … 6=Sáb (JS getDay) */
+  dayOfWeek Int
+  startMin  Int
+  endMin    Int
+  label     String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, dayOfWeek])
+}
+
+model WhatsAppQueue {
+  id               String            @id @default(cuid())
+  name             String
+  /** índice do próximo agente na sequência (round-robin) */
+  nextAgentIndex   Int               @default(0)
+  createdAt        DateTime          @default(now())
+  agents           WhatsAppAgent[]
+  contacts         WhatsAppContact[]
+}
+
+model WhatsAppAgent {
+  id        String         @id @default(cuid())
+  userId    String
+  queueId   String?
+  sortOrder Int            @default(0)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  queue     WhatsAppQueue? @relation(fields: [queueId], references: [id], onDelete: SetNull)
+  createdAt DateTime       @default(now())
+
+  @@unique([userId, queueId])
+  @@index([queueId, sortOrder])
+}
+
+model WhatsAppContact {
+  id                 String            @id @default(cuid())
+  phone              String            @unique
+  remoteJid          String?
+  name               String?
+  status             ContactStatus     @default(bot)
+  assignedToId       String?
+  assignedTo         User?             @relation("AssignedContacts", fields: [assignedToId], references: [id], onDelete: SetNull)
+  /** Oferta atual da fila (vendedor tem 10 min) */
+  offeredToId        String?
+  offeredTo          User?             @relation("OfferedContacts", fields: [offeredToId], references: [id], onDelete: SetNull)
+  offeredAt          DateTime?
+  openToAll          Boolean           @default(false)
+  queueId            String?
+  queue              WhatsAppQueue?    @relation(fields: [queueId], references: [id], onDelete: SetNull)
+  lastMessageAt      DateTime?
+  lastMessagePreview String?
+  unreadCount        Int               @default(0)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  messages           WhatsAppMessage[]
+}
+
+model WhatsAppMessage {
+  id         String           @id @default(cuid())
+  contactId  String
+  contact    WhatsAppContact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  externalId String?
+  direction  MessageDirection
+  type       String           @default("text")
+  body       String?
+  mediaUrl   String?
+  sentById   String?
+  sentBy     User?            @relation(fields: [sentById], references: [id], onDelete: SetNull)
+  createdAt  DateTime         @default(now())
+
+  @@unique([contactId, externalId])
+  @@index([contactId, createdAt])
+}
+
+/** Fluxo/menu do bot (singleton lógico — um registro). */
+model WhatsAppFlow {
+  id              String   @id @default("default")
+  welcomeMessage  String   @default("Olá! Bem-vindo à Calangus. Escolha um atendente:")
+  closedMessage   String   @default("Nosso horário de atendimento se encerrou (seg–sex, 08:00–18:00). Atenderemos assim que possível.")
+  menuEnabled     Boolean  @default(true)
+  /** [{ key, label, action: "agent"|"queue", userId?, queueId? }] */
+  options         Json     @default("[]")
+  updatedAt       DateTime @updatedAt
+}
