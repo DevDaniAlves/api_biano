@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
-import { evolution } from "./evolution.js";
+import { evolution, EvolutionClient } from "./evolution.js";
 import {
   BUSINESS,
   isBusinessHours,
@@ -50,23 +50,74 @@ export function buildMenuText(welcome: string, options: FlowOption[]): string {
   return `${welcome}\n\n${lines.join("\n")}`;
 }
 
-async function botSend(phone: string, text: string) {
+async function botSend(phone: string, text: string): Promise<string | null> {
   if (!evolution.enabled) {
     console.warn("[bot] Evolution off, skip send:", text.slice(0, 80));
-    return;
+    return null;
   }
-  await evolution.sendText(phone, text);
+  const r = await evolution.sendText(phone, text);
+  return EvolutionClient.extractMessageId(r.data);
 }
 
-async function persistBotOut(contactId: string, text: string, extra?: Prisma.WhatsAppContactUpdateInput) {
-  await prisma.whatsAppMessage.create({
-    data: {
+async function persistBotOut(
+  contactId: string,
+  text: string,
+  extra?: Prisma.WhatsAppContactUpdateInput,
+  externalId?: string | null
+) {
+  const since = new Date(Date.now() - 120_000);
+
+  if (externalId) {
+    const byExt = await prisma.whatsAppMessage.findUnique({
+      where: { contactId_externalId: { contactId, externalId } },
+    });
+    if (byExt) {
+      await prisma.whatsAppContact.update({
+        where: { id: contactId },
+        data: {
+          lastMessageAt: new Date(),
+          lastMessagePreview: text.slice(0, 120),
+          ...extra,
+        },
+      });
+      return;
+    }
+  }
+
+  const recent = await prisma.whatsAppMessage.findFirst({
+    where: {
       contactId,
       direction: "out",
       type: "text",
       body: text,
+      createdAt: { gte: since },
     },
+    orderBy: { createdAt: "desc" },
   });
+
+  if (recent) {
+    if (externalId && !recent.externalId) {
+      try {
+        await prisma.whatsAppMessage.update({
+          where: { id: recent.id },
+          data: { externalId },
+        });
+      } catch {
+        /* unique race */
+      }
+    }
+  } else {
+    await prisma.whatsAppMessage.create({
+      data: {
+        contactId,
+        direction: "out",
+        type: "text",
+        body: text,
+        externalId: externalId || null,
+      },
+    });
+  }
+
   await prisma.whatsAppContact.update({
     where: { id: contactId },
     data: {
@@ -82,11 +133,16 @@ export async function sendDepartmentMenu(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  await botSend(contact.phone, DEPT_MENU);
-  await persistBotOut(contactId, DEPT_MENU, {
-    status: "bot",
-    botMenuStep: "department",
-  });
+  const externalId = await botSend(contact.phone, DEPT_MENU);
+  await persistBotOut(
+    contactId,
+    DEPT_MENU,
+    {
+      status: "bot",
+      botMenuStep: "department",
+    },
+    externalId
+  );
 }
 
 /** Menu de vendedores / fila (nível 2). */
@@ -97,11 +153,16 @@ export async function sendSellersMenu(contactId: string) {
   const flow = await getFlow();
   const options = asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS;
   const text = buildMenuText(flow.welcomeMessage, options);
-  await botSend(contact.phone, text);
-  await persistBotOut(contactId, text, {
-    status: "bot",
-    botMenuStep: "sellers",
-  });
+  const externalId = await botSend(contact.phone, text);
+  await persistBotOut(
+    contactId,
+    text,
+    {
+      status: "bot",
+      botMenuStep: "sellers",
+    },
+    externalId
+  );
 }
 
 /** Compat: welcome = departamento. */
@@ -235,8 +296,8 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     await offerFromQueue(contactId, queue.id);
     const msg =
       "Certo! Encaminhamos você para o setor Financeiro. Em breve um atendente irá te responder.";
-    await botSend(contact.phone, msg);
-    await persistBotOut(contactId, msg);
+    const externalId = await botSend(contact.phone, msg);
+    await persistBotOut(contactId, msg, undefined, externalId);
     return;
   }
 
@@ -267,8 +328,8 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     });
     const msg =
       "Perfeito! Encaminhamos você para o atendente escolhido. Em breve ele irá te responder.";
-    await botSend(contact.phone, msg);
-    await persistBotOut(contactId, msg);
+    const externalId = await botSend(contact.phone, msg);
+    await persistBotOut(contactId, msg, undefined, externalId);
     return;
   }
 
@@ -290,8 +351,8 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     where: { id: contactId },
   });
   const msg = "Certo! Você entrou na fila de atendimento. Em breve um vendedor irá te atender.";
-  await botSend(contact.phone, msg);
-  await persistBotOut(contactId, msg);
+  const externalId = await botSend(contact.phone, msg);
+  await persistBotOut(contactId, msg, undefined, externalId);
 }
 
 /** Fora do horário: avisa e deixa na fila aberta para depois. */
@@ -300,15 +361,8 @@ export async function handleOutsideHours(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  await botSend(contact.phone, flow.closedMessage);
-  await prisma.whatsAppMessage.create({
-    data: {
-      contactId,
-      direction: "out",
-      type: "text",
-      body: flow.closedMessage,
-    },
-  });
+  const externalId = await botSend(contact.phone, flow.closedMessage);
+  await persistBotOut(contactId, flow.closedMessage, undefined, externalId);
   const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
   await prisma.whatsAppContact.update({
     where: { id: contactId },

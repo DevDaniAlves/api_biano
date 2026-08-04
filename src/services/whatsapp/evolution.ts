@@ -57,6 +57,30 @@ export class EvolutionClient {
     return (jid || "").split("@")[0].replace(/\D/g, "");
   }
 
+  /** Extrai o id da mensagem na resposta do send (vários formatos Evolution). */
+  static extractMessageId(data: unknown): string | null {
+    if (!data || typeof data !== "object") return null;
+    const root = data as Record<string, unknown>;
+    const candidates: unknown[] = [
+      root,
+      root.data,
+      root.message,
+      (root.data as Record<string, unknown> | undefined)?.key,
+      (root.key as Record<string, unknown> | undefined),
+    ];
+    for (const c of candidates) {
+      if (!c || typeof c !== "object") continue;
+      const o = c as Record<string, unknown>;
+      const key = o.key;
+      if (key && typeof key === "object" && (key as { id?: unknown }).id) {
+        return String((key as { id: unknown }).id);
+      }
+      if (typeof o.id === "string" && o.id.length > 8) return o.id;
+      if (typeof o.messageId === "string") return o.messageId;
+    }
+    return null;
+  }
+
   async sendText(phone: string, text: string) {
     const instance = await this.resolveInstance();
     const number = EvolutionClient.toNumber(phone);

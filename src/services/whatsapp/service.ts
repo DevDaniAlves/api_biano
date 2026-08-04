@@ -22,6 +22,76 @@ const RATING_MSG =
 const INACTIVITY_MSG =
   "Olá! Ainda está por aí? Caso precise de mais alguma informação, estamos à disposição.";
 
+/** Grava out após envio, reutilizando eco do webhook se já chegou. */
+async function upsertOutboundMessage(opts: {
+  contactId: string;
+  type: string;
+  body: string | null;
+  sentById?: string | null;
+  externalId?: string | null;
+  mediaUrl?: string | null;
+}) {
+  const since = new Date(Date.now() - 120_000);
+
+  if (opts.externalId) {
+    const byExt = await prisma.whatsAppMessage.findUnique({
+      where: {
+        contactId_externalId: {
+          contactId: opts.contactId,
+          externalId: opts.externalId,
+        },
+      },
+    });
+    if (byExt) {
+      if (opts.sentById && !byExt.sentById) {
+        return prisma.whatsAppMessage.update({
+          where: { id: byExt.id },
+          data: {
+            sentById: opts.sentById,
+            ...(opts.mediaUrl && !byExt.mediaUrl ? { mediaUrl: opts.mediaUrl } : {}),
+            ...(opts.body && !byExt.body ? { body: opts.body } : {}),
+          },
+        });
+      }
+      return byExt;
+    }
+  }
+
+  const recent = await prisma.whatsAppMessage.findFirst({
+    where: {
+      contactId: opts.contactId,
+      direction: "out",
+      type: opts.type,
+      createdAt: { gte: since },
+      ...(opts.body != null ? { body: opts.body } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (recent) {
+    return prisma.whatsAppMessage.update({
+      where: { id: recent.id },
+      data: {
+        ...(opts.externalId && !recent.externalId ? { externalId: opts.externalId } : {}),
+        ...(opts.sentById && !recent.sentById ? { sentById: opts.sentById } : {}),
+        ...(opts.mediaUrl && !recent.mediaUrl ? { mediaUrl: opts.mediaUrl } : {}),
+      },
+    });
+  }
+
+  return prisma.whatsAppMessage.create({
+    data: {
+      contactId: opts.contactId,
+      direction: "out",
+      type: opts.type,
+      body: opts.body,
+      mediaUrl: opts.mediaUrl ?? null,
+      sentById: opts.sentById ?? null,
+      externalId: opts.externalId || null,
+    },
+  });
+}
+
 export function contactFlags(contact: {
   status: string;
   lastClientMessageAt: Date | null;
@@ -110,26 +180,23 @@ export async function sendTextMessage(opts: {
   const r = await evolution.sendText(contact.phone, text);
   if (!r.ok) throw new Error(`Falha Evolution: ${r.status}`);
 
-  const [msg] = await prisma.$transaction([
-    prisma.whatsAppMessage.create({
-      data: {
-        contactId: contact.id,
-        direction: "out",
-        type: "text",
-        body: text,
-        sentById: opts.userId,
-      },
-    }),
-    prisma.whatsAppContact.update({
-      where: { id: contact.id },
-      data: {
-        lastMessageAt: new Date(),
-        lastMessagePreview: text.slice(0, 120),
-        status: "human",
-        assignedToId: opts.userId,
-      },
-    }),
-  ]);
+  const externalId = EvolutionClient.extractMessageId(r.data);
+  const msg = await upsertOutboundMessage({
+    contactId: contact.id,
+    type: "text",
+    body: text,
+    sentById: opts.userId,
+    externalId,
+  });
+  await prisma.whatsAppContact.update({
+    where: { id: contact.id },
+    data: {
+      lastMessageAt: new Date(),
+      lastMessagePreview: text.slice(0, 120),
+      status: "human",
+      assignedToId: opts.userId,
+    },
+  });
 
   return msg;
 }
@@ -174,27 +241,24 @@ export async function sendImageMessage(opts: {
   });
   if (!r.ok) throw new Error(`Falha Evolution mídia: ${r.status} ${r.text.slice(0, 200)}`);
 
-  const [msg] = await prisma.$transaction([
-    prisma.whatsAppMessage.create({
-      data: {
-        contactId: contact.id,
-        direction: "out",
-        type: "image",
-        body: caption,
-        mediaUrl: opts.publicUrl,
-        sentById: opts.userId,
-      },
-    }),
-    prisma.whatsAppContact.update({
-      where: { id: contact.id },
-      data: {
-        lastMessageAt: new Date(),
-        lastMessagePreview: caption.slice(0, 120),
-        status: "human",
-        assignedToId: opts.userId,
-      },
-    }),
-  ]);
+  const externalId = EvolutionClient.extractMessageId(r.data);
+  const msg = await upsertOutboundMessage({
+    contactId: contact.id,
+    type: "image",
+    body: caption,
+    mediaUrl: opts.publicUrl,
+    sentById: opts.userId,
+    externalId,
+  });
+  await prisma.whatsAppContact.update({
+    where: { id: contact.id },
+    data: {
+      lastMessageAt: new Date(),
+      lastMessagePreview: caption.slice(0, 120),
+      status: "human",
+      assignedToId: opts.userId,
+    },
+  });
 
   return msg;
 }
@@ -230,17 +294,17 @@ export async function resolveContact(contactId: string) {
     where: { id: contactId },
   });
 
+  let externalId: string | null = null;
   if (evolution.enabled) {
-    await evolution.sendText(contact.phone, RATING_MSG);
+    const r = await evolution.sendText(contact.phone, RATING_MSG);
+    externalId = EvolutionClient.extractMessageId(r.data);
   }
 
-  await prisma.whatsAppMessage.create({
-    data: {
-      contactId,
-      direction: "out",
-      type: "text",
-      body: RATING_MSG,
-    },
+  await upsertOutboundMessage({
+    contactId,
+    type: "text",
+    body: RATING_MSG,
+    externalId,
   });
 
   return prisma.whatsAppContact.update({
@@ -274,14 +338,12 @@ export async function warnInactivity(contactId: string, userId: string) {
   const r = await evolution.sendText(contact.phone, text);
   if (!r.ok) throw new Error(`Falha Evolution: ${r.status}`);
 
-  await prisma.whatsAppMessage.create({
-    data: {
-      contactId,
-      direction: "out",
-      type: "text",
-      body: text,
-      sentById: userId,
-    },
+  await upsertOutboundMessage({
+    contactId,
+    type: "text",
+    body: text,
+    sentById: userId,
+    externalId: EvolutionClient.extractMessageId(r.data),
   });
 
   return prisma.whatsAppContact.update({
@@ -301,9 +363,16 @@ async function handleRatingReply(contactId: string, body: string | null) {
       where: { id: contactId },
     });
     const hint = "Por favor, responda apenas com um número de *1* a *5*.";
-    if (evolution.enabled) await evolution.sendText(contact.phone, hint);
-    await prisma.whatsAppMessage.create({
-      data: { contactId, direction: "out", type: "text", body: hint },
+    let externalId: string | null = null;
+    if (evolution.enabled) {
+      const r = await evolution.sendText(contact.phone, hint);
+      externalId = EvolutionClient.extractMessageId(r.data);
+    }
+    await upsertOutboundMessage({
+      contactId,
+      type: "text",
+      body: hint,
+      externalId,
     });
     return;
   }
@@ -313,9 +382,16 @@ async function handleRatingReply(contactId: string, body: string | null) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  if (evolution.enabled) await evolution.sendText(contact.phone, thanks);
-  await prisma.whatsAppMessage.create({
-    data: { contactId, direction: "out", type: "text", body: thanks },
+  let externalId: string | null = null;
+  if (evolution.enabled) {
+    const r = await evolution.sendText(contact.phone, thanks);
+    externalId = EvolutionClient.extractMessageId(r.data);
+  }
+  await upsertOutboundMessage({
+    contactId,
+    type: "text",
+    body: thanks,
+    externalId,
   });
   await prisma.whatsAppContact.update({
     where: { id: contactId },
@@ -426,18 +502,75 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     if (isNew || fresh.status === "bot" || fresh.status === "closed") {
       await processInboundBot(contact.id, body, isNew || fresh.status === "closed");
     }
-  } else {
-    await prisma.whatsAppMessage.create({
-      data: {
+    return;
+  }
+
+  // fromMe: eco da Evolution — não criar de novo se a API já gravou o envio
+  const since = new Date(Date.now() - 120_000);
+  let recentOut = body
+    ? await prisma.whatsAppMessage.findFirst({
+        where: {
+          contactId: contact.id,
+          direction: "out",
+          type,
+          body,
+          createdAt: { gte: since },
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    : null;
+
+  if (!recentOut) {
+    recentOut = await prisma.whatsAppMessage.findFirst({
+      where: {
         contactId: contact.id,
-        externalId: externalId || null,
         direction: "out",
         type,
-        body,
-        mediaUrl,
+        externalId: null,
+        createdAt: { gte: since },
+        ...(body ? { body } : {}),
       },
+      orderBy: { createdAt: "desc" },
     });
   }
+
+  if (!recentOut && (type === "image" || type === "video" || type === "audio")) {
+    recentOut = await prisma.whatsAppMessage.findFirst({
+      where: {
+        contactId: contact.id,
+        direction: "out",
+        type,
+        externalId: null,
+        createdAt: { gte: since },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  if (recentOut) {
+    if (externalId && !recentOut.externalId) {
+      try {
+        await prisma.whatsAppMessage.update({
+          where: { id: recentOut.id },
+          data: { externalId },
+        });
+      } catch {
+        /* unique race */
+      }
+    }
+    return;
+  }
+
+  await prisma.whatsAppMessage.create({
+    data: {
+      contactId: contact.id,
+      externalId: externalId || null,
+      direction: "out",
+      type,
+      body,
+      mediaUrl,
+    },
+  });
 }
 
 export async function getWhatsAppReports() {

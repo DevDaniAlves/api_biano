@@ -17,10 +17,10 @@ async function main() {
   });
 
   const sellers = [];
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= 2; i++) {
     const s = await prisma.user.upsert({
       where: { email: `vendedor${i}@calangus.com` },
-      update: { name: `Atendente ${i}` },
+      update: { name: `Atendente ${i}`, active: true },
       create: {
         name: `Atendente ${i}`,
         email: `vendedor${i}@calangus.com`,
@@ -34,7 +34,7 @@ async function main() {
   // compat: vendedor@calangus.com → Atendente 1
   await prisma.user.upsert({
     where: { email: "vendedor@calangus.com" },
-    update: {},
+    update: { name: "Atendente 1", active: true },
     create: {
       name: "Atendente 1",
       email: "vendedor@calangus.com",
@@ -42,6 +42,18 @@ async function main() {
       role: "seller",
     },
   });
+
+  // Desativa 3º vendedor se existir de seed antigo
+  const seller3 = await prisma.user.findUnique({
+    where: { email: "vendedor3@calangus.com" },
+  });
+  if (seller3) {
+    await prisma.whatsAppAgent.deleteMany({ where: { userId: seller3.id } });
+    await prisma.user.update({
+      where: { id: seller3.id },
+      data: { active: false },
+    });
+  }
 
   const queue = await prisma.whatsAppQueue.upsert({
     where: { id: "seed-vendas" },
@@ -61,8 +73,7 @@ async function main() {
   const options: FlowOption[] = [
     { key: "1", label: "Atendente 1", action: "agent", userId: sellers[0].id },
     { key: "2", label: "Atendente 2", action: "agent", userId: sellers[1].id },
-    { key: "3", label: "Atendente 3", action: "agent", userId: sellers[2].id },
-    { key: "4", label: "Não tenho preferência", action: "queue", queueId: queue.id },
+    { key: "3", label: "Não tenho preferência", action: "queue", queueId: queue.id },
   ];
   await prisma.whatsAppFlow.update({
     where: { id: "default" },
@@ -108,12 +119,11 @@ async function main() {
     await prisma.product.createMany({ data: sampleProducts });
   }
 
-  console.log("Seed OK");
+  console.log("Seed OK (ambiente)");
   console.log("  admin@calangus.com / calangus123");
   console.log("  vendedor1@calangus.com / calangus123");
   console.log("  vendedor2@calangus.com / calangus123");
-  console.log("  vendedor3@calangus.com / calangus123");
-  console.log("  fila Vendas + fluxo 1-4 configurados");
+  console.log("  fila Vendas + fluxo 1-3 (2 atendentes + sem preferência)");
   console.log("  admin:", admin.id);
 }
 
