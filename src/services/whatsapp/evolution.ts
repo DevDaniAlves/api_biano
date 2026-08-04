@@ -1,22 +1,32 @@
 import { env } from "../../config.js";
+import { prisma } from "../../db.js";
 
 export class EvolutionClient {
   private baseUrl: string;
   private apiKey: string;
-  private instance: string;
+  private instanceFallback: string;
 
   constructor() {
     this.baseUrl = (env.WHATSAPP_API_URL ?? "").replace(/\/+$/, "");
     this.apiKey = env.WHATSAPP_API_KEY ?? "";
-    this.instance = env.WHATSAPP_INSTANCE ?? "BIANO";
+    this.instanceFallback = env.WHATSAPP_INSTANCE ?? "BIANO";
+  }
+
+  get credentialsOk() {
+    return Boolean(this.baseUrl && this.apiKey);
   }
 
   get enabled() {
-    return Boolean(this.baseUrl && this.apiKey && this.instance);
+    return this.credentialsOk;
+  }
+
+  async resolveInstance(): Promise<string> {
+    const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+    return row?.instanceName || this.instanceFallback;
   }
 
   get instanceName() {
-    return this.instance;
+    return this.instanceFallback;
   }
 
   private headers() {
@@ -48,8 +58,9 @@ export class EvolutionClient {
   }
 
   async sendText(phone: string, text: string) {
+    const instance = await this.resolveInstance();
     const number = EvolutionClient.toNumber(phone);
-    const r = await this.req("POST", `/message/sendText/${encodeURIComponent(this.instance)}`, {
+    const r = await this.req("POST", `/message/sendText/${encodeURIComponent(instance)}`, {
       number,
       text,
     });
@@ -66,8 +77,9 @@ export class EvolutionClient {
     fileName?: string;
     mediatype?: "image" | "document" | "audio" | "video";
   }) {
+    const instance = await this.resolveInstance();
     const number = EvolutionClient.toNumber(opts.phone);
-    const r = await this.req("POST", `/message/sendMedia/${encodeURIComponent(this.instance)}`, {
+    const r = await this.req("POST", `/message/sendMedia/${encodeURIComponent(instance)}`, {
       number,
       mediatype: opts.mediatype ?? "image",
       mimetype: opts.mimetype,
@@ -77,6 +89,30 @@ export class EvolutionClient {
     });
     if (!r.ok) console.error("[evolution] sendMedia", r.status, r.text.slice(0, 300));
     return r;
+  }
+
+  async createInstance(instanceName: string) {
+    return this.req("POST", "/instance/create", {
+      instanceName,
+      integration: "WHATSAPP-BAILEYS",
+      qrcode: true,
+    });
+  }
+
+  async connectInstance(instanceName: string) {
+    return this.req("GET", `/instance/connect/${encodeURIComponent(instanceName)}`);
+  }
+
+  async connectionState(instanceName: string) {
+    return this.req("GET", `/instance/connectionState/${encodeURIComponent(instanceName)}`);
+  }
+
+  async logoutInstance(instanceName: string) {
+    return this.req("DELETE", `/instance/logout/${encodeURIComponent(instanceName)}`);
+  }
+
+  async deleteInstance(instanceName: string) {
+    return this.req("DELETE", `/instance/delete/${encodeURIComponent(instanceName)}`);
   }
 }
 

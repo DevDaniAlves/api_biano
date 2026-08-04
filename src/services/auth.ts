@@ -37,6 +37,15 @@ export function authRequired(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+/** Usar após authRequired. */
+export function adminRequired(req: Request, res: Response, next: NextFunction) {
+  if (req.user?.role !== "admin") {
+    res.status(403).json({ error: "Somente admin" });
+    return;
+  }
+  next();
+}
+
 export async function login(email: string, password: string) {
   const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
   if (!user || !user.active) return null;

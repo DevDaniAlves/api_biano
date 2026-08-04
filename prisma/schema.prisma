@@ -30,12 +30,19 @@ enum ContactStatus {
   bot
   waiting
   human
+  awaiting_rating
   closed
 }
 
 enum MessageDirection {
   in
   out
+}
+
+/** Etapa do menu do bot: departamento (financeiro/atendimento) ou escolha de vendedor */
+enum BotMenuStep {
+  department
+  sellers
 }
 
 model ScrapeJob {
@@ -135,26 +142,31 @@ model WhatsAppAgent {
 }
 
 model WhatsAppContact {
-  id                 String            @id @default(cuid())
-  phone              String            @unique
-  remoteJid          String?
-  name               String?
-  status             ContactStatus     @default(bot)
-  assignedToId       String?
-  assignedTo         User?             @relation("AssignedContacts", fields: [assignedToId], references: [id], onDelete: SetNull)
+  id                   String            @id @default(cuid())
+  phone                String            @unique
+  remoteJid            String?
+  name                 String?
+  status               ContactStatus     @default(bot)
+  botMenuStep          BotMenuStep       @default(department)
+  assignedToId         String?
+  assignedTo           User?             @relation("AssignedContacts", fields: [assignedToId], references: [id], onDelete: SetNull)
   /** Oferta atual da fila (vendedor tem 10 min) */
-  offeredToId        String?
-  offeredTo          User?             @relation("OfferedContacts", fields: [offeredToId], references: [id], onDelete: SetNull)
-  offeredAt          DateTime?
-  openToAll          Boolean           @default(false)
-  queueId            String?
-  queue              WhatsAppQueue?    @relation(fields: [queueId], references: [id], onDelete: SetNull)
-  lastMessageAt      DateTime?
-  lastMessagePreview String?
-  unreadCount        Int               @default(0)
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  messages           WhatsAppMessage[]
+  offeredToId          String?
+  offeredTo            User?             @relation("OfferedContacts", fields: [offeredToId], references: [id], onDelete: SetNull)
+  offeredAt            DateTime?
+  openToAll            Boolean           @default(false)
+  queueId              String?
+  queue                WhatsAppQueue?    @relation(fields: [queueId], references: [id], onDelete: SetNull)
+  lastMessageAt        DateTime?
+  lastMessagePreview   String?
+  lastClientMessageAt  DateTime?
+  inactivityWarnedAt   DateTime?
+  rating               Int?
+  ratingAskedAt        DateTime?
+  unreadCount          Int               @default(0)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  messages             WhatsAppMessage[]
 }
 
 model WhatsAppMessage {
@@ -183,4 +195,25 @@ model WhatsAppFlow {
   /** [{ key, label, action: "agent"|"queue", userId?, queueId? }] */
   options         Json     @default("[]")
   updatedAt       DateTime @updatedAt
+}
+
+/** Instância Evolution conectada via UI (singleton). */
+model WhatsAppConnection {
+  id            String   @id @default("default")
+  instanceName  String   @default("BIANO")
+  status        String   @default("disconnected")
+  lastQr        String?
+  updatedAt     DateTime @updatedAt
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  price       Float
+  imageUrl    String?
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }

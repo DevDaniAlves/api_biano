@@ -74,6 +74,40 @@ async function main() {
     },
   });
 
+  await prisma.whatsAppConnection.upsert({
+    where: { id: "default" },
+    update: {},
+    create: { id: "default", instanceName: "BIANO", status: "disconnected" },
+  });
+
+  const sampleProducts = [
+    {
+      name: "Camiseta Oversized Preta",
+      description: "Algodão premium, caimento solto.",
+      price: 89.9,
+      imageUrl: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=600",
+      sortOrder: 1,
+    },
+    {
+      name: "Calça Cargo Bege",
+      description: "Cargo leve para o dia a dia.",
+      price: 159.9,
+      imageUrl: "https://images.unsplash.com/photo-1624378439575-d8705ad7ae80?w=600",
+      sortOrder: 2,
+    },
+    {
+      name: "Jaqueta Bomber",
+      description: "Camada leve com visual urbano.",
+      price: 249.9,
+      imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=600",
+      sortOrder: 3,
+    },
+  ];
+  const productCount = await prisma.product.count();
+  if (productCount === 0) {
+    await prisma.product.createMany({ data: sampleProducts });
+  }
+
   console.log("Seed OK");
   console.log("  admin@calangus.com / calangus123");
   console.log("  vendedor1@calangus.com / calangus123");

@@ -1,40 +1,44 @@
 import { Router } from "express";
 import multer from "multer";
 import { prisma } from "./db.js";
+import { adminRequired, authRequired } from "./services/auth.js";
 import { dispatchPending, resetDispatchStatus } from "./services/boletos.js";
 import { todayYmd } from "./services/csv.js";
 import { importCsvBuffer, runScrapeJob } from "./services/jobs.js";
+import {
+  recordWebhookHit,
+  webhookStatusPayload,
+} from "./services/whatsapp/webhook-hits.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 export const router = Router();
 
-/**
- * @openapi
- * /health:
- *   get:
- *     summary: Healthcheck
- *     tags: [System]
- *     responses:
- *       200:
- *         description: OK
- */
 router.get("/health", (_req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
 
-/**
- * @openapi
- * /scrape:
- *   post:
- *     summary: Login Playwright → API findAll (diasVencimento=0 = Hoje) → salva no banco
- *     tags: [Scrape]
- *     responses:
- *       202:
- *         description: Job iniciado
- *       409:
- *         description: Já há scrape em andamento
- */
-router.post("/scrape", async (_req, res) => {
+/** Ping público para validar ngrok → API (abra no browser ou curl). */
+router.all("/webhook/ping", (req, res) => {
+  recordWebhookHit({
+    path: "/webhook/ping",
+    method: req.method,
+    ip: req.ip,
+    preview: "ping ok",
+  });
+  res.json({
+    message: "ngrok está batendo na API",
+    time: new Date().toISOString(),
+    ...webhookStatusPayload(),
+  });
+});
+
+router.get("/webhook/status", (_req, res) => {
+  res.json(webhookStatusPayload());
+});
+
+const adminOnly = [authRequired, adminRequired] as const;
+
+router.post("/scrape", ...adminOnly, async (_req, res) => {
   try {
     const { jobId } = await runScrapeJob();
     res.status(202).json({ jobId, status: "queued" });
@@ -45,27 +49,7 @@ router.post("/scrape", async (_req, res) => {
   }
 });
 
-/**
- * @openapi
- * /import/csv:
- *   post:
- *     summary: Importa CSV do Extrato (sem Playwright) — útil para teste ou upload manual
- *     tags: [Scrape]
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             properties:
- *               file:
- *                 type: string
- *                 format: binary
- *     responses:
- *       200:
- *         description: Importado
- */
-router.post("/import/csv", upload.single("file"), async (req, res) => {
+router.post("/import/csv", ...adminOnly, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: "Envie o arquivo CSV no campo file" });
@@ -91,41 +75,13 @@ router.post("/import/csv", upload.single("file"), async (req, res) => {
   }
 });
 
-/**
- * @openapi
- * /jobs:
- *   get:
- *     summary: Lista jobs de scrape
- *     tags: [Scrape]
- *     responses:
- *       200:
- *         description: Lista
- */
-router.get("/jobs", async (_req, res) => {
+router.get("/jobs", ...adminOnly, async (_req, res) => {
   const jobs = await prisma.scrapeJob.findMany({ orderBy: { createdAt: "desc" }, take: 30 });
   res.json(jobs);
 });
 
-/**
- * @openapi
- * /jobs/{id}:
- *   get:
- *     summary: Detalhe de um job
- *     tags: [Scrape]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Job
- *       404:
- *         description: Não encontrado
- */
-router.get("/jobs/:id", async (req, res) => {
-  const job = await prisma.scrapeJob.findUnique({ where: { id: req.params.id } });
+router.get("/jobs/:id", ...adminOnly, async (req, res) => {
+  const job = await prisma.scrapeJob.findUnique({ where: { id: String(req.params.id) } });
   if (!job) {
     res.status(404).json({ error: "Job não encontrado" });
     return;
@@ -133,32 +89,7 @@ router.get("/jobs/:id", async (req, res) => {
   res.json(job);
 });
 
-/**
- * @openapi
- * /boletos:
- *   get:
- *     summary: Lista boletos
- *     tags: [Boletos]
- *     parameters:
- *       - in: query
- *         name: vencimento
- *         schema:
- *           type: string
- *           example: "2026-07-30"
- *       - in: query
- *         name: status
- *         schema:
- *           type: string
- *           enum: [pending, sent, failed, skipped]
- *       - in: query
- *         name: hoje
- *         schema:
- *           type: boolean
- *     responses:
- *       200:
- *         description: Lista de boletos
- */
-router.get("/boletos", async (req, res) => {
+router.get("/boletos", ...adminOnly, async (req, res) => {
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const hoje = req.query.hoje === "1" || req.query.hoje === "true";
   const vencimento =
@@ -178,23 +109,7 @@ router.get("/boletos", async (req, res) => {
   res.json(boletos);
 });
 
-/**
- * @openapi
- * /boletos/stats:
- *   get:
- *     summary: Contagem por status (hoje por padrão)
- *     tags: [Boletos]
- *     parameters:
- *       - in: query
- *         name: hoje
- *         schema:
- *           type: boolean
- *           default: true
- *     responses:
- *       200:
- *         description: Stats
- */
-router.get("/boletos/stats", async (req, res) => {
+router.get("/boletos/stats", ...adminOnly, async (req, res) => {
   const hoje = req.query.hoje !== "false" && req.query.hoje !== "0";
   const vencimento = hoje ? todayYmd() : undefined;
   const grouped = await prisma.boleto.groupBy({
@@ -214,28 +129,7 @@ router.get("/boletos/stats", async (req, res) => {
   });
 });
 
-/**
- * @openapi
- * /dispatch:
- *   post:
- *     summary: Dispara mensagens de cobrança para boletos pending
- *     tags: [Dispatch]
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               hoje:
- *                 type: boolean
- *                 default: true
- *               vencimento:
- *                 type: string
- *     responses:
- *       200:
- *         description: Resultado do disparo
- */
-router.post("/dispatch", async (req, res) => {
+router.post("/dispatch", ...adminOnly, async (req, res) => {
   try {
     const hoje = req.body?.hoje !== false;
     const vencimento =
@@ -251,26 +145,7 @@ router.post("/dispatch", async (req, res) => {
   }
 });
 
-/**
- * @openapi
- * /dispatch/reset:
- *   post:
- *     summary: Desmarca envios (sent/failed/skipped → pending) para retestar
- *     tags: [Dispatch]
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               hoje:
- *                 type: boolean
- *                 default: true
- *     responses:
- *       200:
- *         description: Quantidade resetada
- */
-router.post("/dispatch/reset", async (req, res) => {
+router.post("/dispatch/reset", ...adminOnly, async (req, res) => {
   try {
     const hoje = req.body?.hoje !== false;
     const vencimento =
@@ -286,17 +161,7 @@ router.post("/dispatch/reset", async (req, res) => {
   }
 });
 
-/**
- * @openapi
- * /boletos:
- *   delete:
- *     summary: Apaga todos os boletos (e jobs de scrape)
- *     tags: [Boletos]
- *     responses:
- *       200:
- *         description: Quantidade apagada
- */
-router.delete("/boletos", async (_req, res) => {
+router.delete("/boletos", ...adminOnly, async (_req, res) => {
   try {
     const boletos = await prisma.boleto.deleteMany({});
     const jobs = await prisma.scrapeJob.deleteMany({});

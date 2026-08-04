@@ -11,14 +11,21 @@ import {
   type FlowOption,
 } from "../services/whatsapp/flow.js";
 import {
+  recordWebhookHit,
+  webhookStatusPayload,
+} from "../services/whatsapp/webhook-hits.js";
+import { evolution } from "../services/whatsapp/evolution.js";
+import {
   UPLOADS_DIR,
   assignContact,
+  getWhatsAppReports,
   handleEvolutionWebhook,
   listContacts,
   listMessages,
   resolveContact,
   sendImageMessage,
   sendTextMessage,
+  warnInactivity,
 } from "../services/whatsapp/service.js";
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -61,12 +68,34 @@ whatsappRouter.get("/auth/me", authRequired, async (req, res) => {
 
 whatsappRouter.post("/webhook/evolution", async (req, res) => {
   try {
-    await handleEvolutionWebhook(req.body as Record<string, unknown>);
+    const body = req.body as Record<string, unknown>;
+    const data = (body.data ?? body) as Record<string, unknown>;
+    const key = (data.key ?? {}) as Record<string, unknown>;
+    const message = (data.message ?? {}) as Record<string, unknown>;
+    const preview =
+      typeof message.conversation === "string"
+        ? message.conversation
+        : message.extendedTextMessage && typeof message.extendedTextMessage === "object"
+          ? String((message.extendedTextMessage as { text?: string }).text ?? "")
+          : null;
+    recordWebhookHit({
+      path: "/whatsapp/webhook/evolution",
+      method: "POST",
+      ip: req.ip,
+      event: String(body.event ?? body.type ?? "MESSAGES_UPSERT"),
+      from: key.remoteJid ? String(key.remoteJid) : null,
+      preview,
+    });
+    await handleEvolutionWebhook(body);
     res.json({ ok: true });
   } catch (err) {
     console.error("[webhook]", err);
     res.status(500).json({ error: "webhook error" });
   }
+});
+
+whatsappRouter.get("/webhook/status", (_req, res) => {
+  res.json(webhookStatusPayload());
 });
 
 whatsappRouter.use(authRequired);
@@ -92,9 +121,11 @@ whatsappRouter.get("/messages", async (req, res) => {
       res.status(400).json({ error: "contactId obrigatório" });
       return;
     }
-    // Abrir conversa = assumir (se elegível)
+    const peek = req.query.peek === "1" || req.query.peek === "true";
     res.json(
-      await listMessages(contactId, req.user!.id, req.user!.role as "admin" | "seller")
+      await listMessages(contactId, req.user!.id, req.user!.role as "admin" | "seller", {
+        assume: !peek,
+      })
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -164,6 +195,135 @@ whatsappRouter.post("/contacts/assign", async (req, res) => {
 whatsappRouter.post("/contacts/resolve", async (req, res) => {
   try {
     res.json(await resolveContact(String(req.body?.contactId ?? "")));
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/contacts/inactivity-warn", async (req, res) => {
+  try {
+    res.json(
+      await warnInactivity(String(req.body?.contactId ?? ""), req.user!.id)
+    );
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/reports", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    res.json(await getWhatsAppReports());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/connection", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    const row = await prisma.whatsAppConnection.upsert({
+      where: { id: "default" },
+      update: {},
+      create: { id: "default", instanceName: env.WHATSAPP_INSTANCE ?? "BIANO" },
+    });
+    let live: unknown = null;
+    if (evolution.credentialsOk) {
+      const st = await evolution.connectionState(row.instanceName);
+      live = st.data;
+      if (st.ok) {
+        const state =
+          (st.data as { instance?: { state?: string } })?.instance?.state ??
+          (st.data as { state?: string })?.state ??
+          row.status;
+        await prisma.whatsAppConnection.update({
+          where: { id: "default" },
+          data: { status: String(state) },
+        });
+        row.status = String(state);
+      }
+    }
+    res.json({
+      ...row,
+      credentialsOk: evolution.credentialsOk,
+      live,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/connection", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    if (!evolution.credentialsOk) {
+      res.status(400).json({ error: "Configure WHATSAPP_API_URL e WHATSAPP_API_KEY no .env" });
+      return;
+    }
+    const instanceName = String(req.body?.instanceName ?? env.WHATSAPP_INSTANCE ?? "BIANO").trim();
+    if (!instanceName) {
+      res.status(400).json({ error: "instanceName obrigatório" });
+      return;
+    }
+
+    await evolution.createInstance(instanceName);
+    const connect = await evolution.connectInstance(instanceName);
+    const data = connect.data as {
+      base64?: string;
+      qrcode?: { base64?: string };
+      pairingCode?: string;
+    };
+    const qr =
+      data?.base64 ??
+      data?.qrcode?.base64 ??
+      (typeof (connect.data as { qrcode?: string })?.qrcode === "string"
+        ? (connect.data as { qrcode: string }).qrcode
+        : null);
+
+    const row = await prisma.whatsAppConnection.upsert({
+      where: { id: "default" },
+      update: {
+        instanceName,
+        status: "connecting",
+        lastQr: qr,
+      },
+      create: {
+        id: "default",
+        instanceName,
+        status: "connecting",
+        lastQr: qr,
+      },
+    });
+    res.json({ ...row, connect: connect.data });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.delete("/connection", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+    if (row && evolution.credentialsOk) {
+      await evolution.logoutInstance(row.instanceName).catch(() => {});
+    }
+    await prisma.whatsAppConnection.update({
+      where: { id: "default" },
+      data: { status: "disconnected", lastQr: null },
+    });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

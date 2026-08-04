@@ -18,6 +18,12 @@ const schema = z.object({
   WHATSAPP_API_URL: z.string().optional(),
   WHATSAPP_API_KEY: z.string().optional(),
   WHATSAPP_INSTANCE: z.string().optional(),
+  /** Número comercial para wa.me (DDI+DDD+número). */
+  WHATSAPP_BUSINESS_PHONE: z.string().optional(),
+  /** Keyword no wa.me que pula menu departamento → vendedores. */
+  CATALOG_WA_KEYWORD: z.string().default("catalogo"),
+  /** wa_me | form — modo de contato no catálogo público. */
+  CATALOG_CONTACT_MODE: z.enum(["wa_me", "form"]).default("wa_me"),
   /** Se definido, ignora o telefone do Meu Crediário e envia só para este número (DDI+DDD). */
   WHATSAPP_OVERRIDE_PHONE: z.string().optional(),
   MESSAGE_TEMPLATE: z
@@ -31,6 +37,9 @@ const schema = z.object({
   DISPATCH_DELAY_MS: z.coerce.number().default(2000),
   JWT_SECRET: z.string().default("calangus-dev-secret-change-me"),
   API_PUBLIC_URL: z.string().default("http://localhost:3333"),
+  RATING_TIMEOUT_MINUTES: z.coerce.number().default(5),
+  INACTIVITY_WARN_MINUTES: z.coerce.number().default(10),
+  INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(15),
 });
 
 export const env = schema.parse(process.env);
