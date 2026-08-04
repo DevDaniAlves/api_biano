@@ -23,6 +23,7 @@ import {
   listContacts,
   listMessages,
   resolveContact,
+  seedDemoReports,
   sendImageMessage,
   sendTextMessage,
   warnInactivity,
@@ -216,7 +217,30 @@ whatsappRouter.get("/reports", async (req, res) => {
       res.status(403).json({ error: "Só admin" });
       return;
     }
-    res.json(await getWhatsAppReports());
+    res.json(
+      await getWhatsAppReports({
+        preset: typeof req.query.preset === "string" ? req.query.preset : undefined,
+        from: typeof req.query.from === "string" ? req.query.from : undefined,
+        to: typeof req.query.to === "string" ? req.query.to : undefined,
+        month: typeof req.query.month === "string" ? req.query.month : undefined,
+      })
+    );
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/reports/seed-demo", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    const count = Number(req.body?.count ?? 90);
+    const result = await seedDemoReports(
+      Number.isFinite(count) ? Math.min(Math.max(count, 20), 200) : 90
+    );
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
