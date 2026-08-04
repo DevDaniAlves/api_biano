@@ -101,9 +101,40 @@ model User {
   offered       WhatsAppContact[]   @relation("OfferedContacts")
   messages      WhatsAppMessage[]
   unavailabilities UserUnavailability[]
+  scheduleSlots UserScheduleSlot[]
+  leaves        UserLeave[]
 }
 
-/** Janelas de inatividade do vendedor (não recebe oferta na fila). */
+/** Intervalos de atendimento semanais (ex.: seg 08:00–12:00 e 13:00–18:00). */
+model UserScheduleSlot {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /** 0=Dom … 6=Sáb (JS getDay) */
+  dayOfWeek Int
+  startMin  Int
+  endMin    Int
+  createdAt DateTime @default(now())
+
+  @@index([userId, dayOfWeek])
+}
+
+/** Folga / férias / outros (intervalo de datas). */
+model UserLeave {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /** ferias | folga | outro */
+  type      String   @default("outro")
+  label     String?
+  startsAt  DateTime
+  endsAt    DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId, startsAt, endsAt])
+}
+
+/** Janelas semanais de inatividade (legado / bloqueio pontual recorrente). */
 model UserUnavailability {
   id        String   @id @default(cuid())
   userId    String
@@ -150,10 +181,18 @@ model WhatsAppContact {
   botMenuStep          BotMenuStep       @default(department)
   assignedToId         String?
   assignedTo           User?             @relation("AssignedContacts", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedAt           DateTime?
   /** Oferta atual da fila (vendedor tem 10 min) */
   offeredToId          String?
   offeredTo            User?             @relation("OfferedContacts", fields: [offeredToId], references: [id], onDelete: SetNull)
   offeredAt            DateTime?
+  /** Primeira oferta exclusiva (não apaga no expire/assume — métricas) */
+  firstOfferedAt       DateTime?
+  firstOfferedToId     String?
+  /** Quando ficou disponível para qualquer vendedor */
+  openedToAllAt        DateTime?
+  /** Segundos até assumir (calculado no assume) */
+  assumeWaitSeconds    Int?
   openToAll            Boolean           @default(false)
   queueId              String?
   queue                WhatsAppQueue?    @relation(fields: [queueId], references: [id], onDelete: SetNull)

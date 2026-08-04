@@ -10,6 +10,7 @@ import {
   listContactsForUser,
   processInboundBot,
 } from "./flow.js";
+import { assumeMetricStart } from "./schedule.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const UPLOADS_DIR = path.resolve(__dirname, "../../../uploads");
@@ -268,6 +269,29 @@ export async function assignContact(opts: {
   userId?: string | null;
   queueId?: string | null;
 }) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: opts.contactId },
+  });
+  const now = new Date();
+  let assumeWaitSeconds: number | undefined;
+  let assignedAt: Date | undefined;
+
+  if (opts.userId) {
+    const start = assumeMetricStart(
+      {
+        openToAll: contact.openToAll,
+        firstOfferedAt: contact.firstOfferedAt,
+        firstOfferedToId: contact.firstOfferedToId,
+        openedToAllAt: contact.openedToAllAt,
+        offeredAt: contact.offeredAt,
+        createdAt: contact.createdAt,
+      },
+      opts.userId
+    );
+    assumeWaitSeconds = Math.max(0, Math.round((now.getTime() - start.getTime()) / 1000));
+    assignedAt = contact.assignedAt ?? now;
+  }
+
   return prisma.whatsAppContact.update({
     where: { id: opts.contactId },
     data: {
@@ -277,6 +301,12 @@ export async function assignContact(opts: {
             status: opts.userId ? "human" : "waiting",
             offeredToId: null,
             openToAll: false,
+            ...(opts.userId
+              ? {
+                  assignedAt,
+                  assumeWaitSeconds: contact.assumeWaitSeconds ?? assumeWaitSeconds,
+                }
+              : { assignedAt: null, assumeWaitSeconds: null }),
           }
         : {}),
       ...(opts.queueId !== undefined ? { queueId: opts.queueId } : {}),
@@ -578,23 +608,124 @@ export async function getWhatsAppReports() {
     by: ["status"],
     _count: { _all: true },
   });
+
   const rated = await prisma.whatsAppContact.findMany({
     where: { rating: { not: null } },
-    select: { rating: true },
+    select: {
+      rating: true,
+      assignedToId: true,
+      assignedTo: { select: { id: true, name: true } },
+      ratingAskedAt: true,
+      phone: true,
+      name: true,
+      updatedAt: true,
+    },
+    orderBy: { updatedAt: "desc" },
   });
+
   const avgRating =
     rated.length > 0
       ? rated.reduce((s, r) => s + (r.rating ?? 0), 0) / rated.length
       : null;
+
+  const ratingDistribution: Record<string, number> = {
+    "1": 0,
+    "2": 0,
+    "3": 0,
+    "4": 0,
+    "5": 0,
+  };
+  for (const r of rated) {
+    const k = String(r.rating ?? "");
+    if (k in ratingDistribution) ratingDistribution[k] += 1;
+  }
+
+  const bySellerMap = new Map<
+    string,
+    { sellerId: string; sellerName: string; count: number; sum: number }
+  >();
+  for (const r of rated) {
+    const id = r.assignedToId ?? "sem-vendedor";
+    const name = r.assignedTo?.name ?? "Sem vendedor";
+    const cur = bySellerMap.get(id) ?? { sellerId: id, sellerName: name, count: 0, sum: 0 };
+    cur.count += 1;
+    cur.sum += r.rating ?? 0;
+    bySellerMap.set(id, cur);
+  }
+  const ratingsBySeller = [...bySellerMap.values()]
+    .map((s) => ({
+      sellerId: s.sellerId,
+      sellerName: s.sellerName,
+      count: s.count,
+      avgRating: s.count ? s.sum / s.count : null,
+    }))
+    .sort((a, b) => (b.avgRating ?? 0) - (a.avgRating ?? 0));
+
+  const assumed = await prisma.whatsAppContact.findMany({
+    where: { assumeWaitSeconds: { not: null }, assignedToId: { not: null } },
+    select: {
+      assumeWaitSeconds: true,
+      assignedToId: true,
+      assignedTo: { select: { id: true, name: true } },
+      firstOfferedToId: true,
+      openedToAllAt: true,
+    },
+  });
+
+  const assumeAll = assumed.map((c) => c.assumeWaitSeconds ?? 0);
+  const avgAssumeSeconds =
+    assumeAll.length > 0
+      ? Math.round(assumeAll.reduce((a, b) => a + b, 0) / assumeAll.length)
+      : null;
+
+  const assumeBySellerMap = new Map<
+    string,
+    { sellerId: string; sellerName: string; count: number; sum: number }
+  >();
+  for (const c of assumed) {
+    const id = c.assignedToId!;
+    const name = c.assignedTo?.name ?? "—";
+    const cur = assumeBySellerMap.get(id) ?? {
+      sellerId: id,
+      sellerName: name,
+      count: 0,
+      sum: 0,
+    };
+    cur.count += 1;
+    cur.sum += c.assumeWaitSeconds ?? 0;
+    assumeBySellerMap.set(id, cur);
+  }
+  const assumeBySeller = [...assumeBySellerMap.values()]
+    .map((s) => ({
+      sellerId: s.sellerId,
+      sellerName: s.sellerName,
+      count: s.count,
+      avgSeconds: s.count ? Math.round(s.sum / s.count) : null,
+    }))
+    .sort((a, b) => (a.avgSeconds ?? 0) - (b.avgSeconds ?? 0));
+
   const messagesToday = await prisma.whatsAppMessage.count({
     where: {
       createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
     },
   });
+
   return {
     byStatus: Object.fromEntries(byStatus.map((g) => [g.status, g._count._all])),
     avgRating,
     ratingsCount: rated.length,
+    ratingDistribution,
+    ratingsBySeller,
+    recentRatings: rated.slice(0, 20).map((r) => ({
+      rating: r.rating,
+      sellerName: r.assignedTo?.name ?? null,
+      contactName: r.name,
+      phone: r.phone,
+      at: r.updatedAt,
+    })),
+    avgAssumeSeconds,
+    assumeCount: assumed.length,
+    assumeBySeller,
     messagesToday,
   };
 }

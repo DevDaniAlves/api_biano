@@ -5,7 +5,11 @@ import { evolution, EvolutionClient } from "./evolution.js";
 import {
   BUSINESS,
   isBusinessHours,
+  isOnLeave,
   isUserUnavailable,
+  isWithinSchedule,
+  assumeMetricStart,
+  nowInSaoPaulo,
 } from "./schedule.js";
 
 function asOptions(raw: unknown): FlowOption[] {
@@ -184,6 +188,16 @@ async function loadUserWindows(userId: string) {
 async function userIsAvailable(userId: string): Promise<boolean> {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user?.active) return false;
+
+  const now = new Date();
+  const leaves = await prisma.userLeave.findMany({
+    where: { userId, startsAt: { lte: now }, endsAt: { gte: now } },
+  });
+  if (isOnLeave(leaves, now)) return false;
+
+  const slots = await prisma.userScheduleSlot.findMany({ where: { userId } });
+  if (!isWithinSchedule(slots, nowInSaoPaulo())) return false;
+
   const windows = await loadUserWindows(userId);
   return !isUserUnavailable(windows);
 }
@@ -196,15 +210,40 @@ export async function offerToAgent(opts: {
 }) {
   const available = await userIsAvailable(opts.userId);
   const now = new Date();
+  const existing = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: opts.contactId },
+  });
+
+  if (available) {
+    return prisma.whatsAppContact.update({
+      where: { id: opts.contactId },
+      data: {
+        status: "waiting",
+        queueId: opts.queueId ?? undefined,
+        offeredToId: opts.userId,
+        offeredAt: now,
+        openToAll: false,
+        assignedToId: null,
+        assignedAt: null,
+        assumeWaitSeconds: null,
+        firstOfferedAt: existing.firstOfferedAt ?? now,
+        firstOfferedToId: existing.firstOfferedToId ?? opts.userId,
+      },
+    });
+  }
+
   return prisma.whatsAppContact.update({
     where: { id: opts.contactId },
     data: {
       status: "waiting",
       queueId: opts.queueId ?? undefined,
-      offeredToId: available ? opts.userId : null,
-      offeredAt: available ? now : null,
-      openToAll: !available,
+      offeredToId: null,
+      offeredAt: null,
+      openToAll: true,
+      openedToAllAt: existing.openedToAllAt ?? now,
       assignedToId: null,
+      assignedAt: null,
+      assumeWaitSeconds: null,
     },
   });
 }
@@ -222,6 +261,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
   });
 
   if (queue.agents.length === 0) {
+    const now = new Date();
     return prisma.whatsAppContact.update({
       where: { id: contactId },
       data: {
@@ -230,7 +270,10 @@ export async function offerFromQueue(contactId: string, queueId: string) {
         openToAll: true,
         offeredToId: null,
         offeredAt: null,
+        openedToAllAt: now,
         assignedToId: null,
+        assignedAt: null,
+        assumeWaitSeconds: null,
       },
     });
   }
@@ -254,6 +297,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
   });
 
   if (!picked) {
+    const now = new Date();
     return prisma.whatsAppContact.update({
       where: { id: contactId },
       data: {
@@ -262,7 +306,10 @@ export async function offerFromQueue(contactId: string, queueId: string) {
         openToAll: true,
         offeredToId: null,
         offeredAt: null,
+        openedToAllAt: now,
         assignedToId: null,
+        assignedAt: null,
+        assumeWaitSeconds: null,
       },
     });
   }
@@ -364,15 +411,17 @@ export async function handleOutsideHours(contactId: string) {
   const externalId = await botSend(contact.phone, flow.closedMessage);
   await persistBotOut(contactId, flow.closedMessage, undefined, externalId);
   const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+  const now = new Date();
   await prisma.whatsAppContact.update({
     where: { id: contactId },
     data: {
       status: "waiting",
       queueId: queue?.id ?? null,
       openToAll: true,
+      openedToAllAt: contact.openedToAllAt ?? now,
       offeredToId: null,
       offeredAt: null,
-      lastMessageAt: new Date(),
+      lastMessageAt: now,
       lastMessagePreview: flow.closedMessage.slice(0, 120),
     },
   });
@@ -433,10 +482,16 @@ export async function expireStaleOffers() {
       offeredAt: { lt: cutoff },
     },
   });
+  const now = new Date();
   for (const c of stale) {
     await prisma.whatsAppContact.update({
       where: { id: c.id },
-      data: { openToAll: true, offeredToId: null, offeredAt: null },
+      data: {
+        openToAll: true,
+        offeredToId: null,
+        offeredAt: null,
+        openedToAllAt: c.openedToAllAt ?? now,
+      },
     });
     console.log(`[fila] oferta expirada → aberta a todos: ${c.phone}`);
   }
@@ -512,11 +567,16 @@ export async function assumeOnOpen(
     if (!canTake) {
       throw new Error("Esta conversa está oferecida a outro vendedor");
     }
+    const now = new Date();
+    const start = assumeMetricStart(contact, userId);
+    const assumeWaitSeconds = Math.max(0, Math.round((now.getTime() - start.getTime()) / 1000));
     return prisma.whatsAppContact.update({
       where: { id: contactId },
       data: {
         status: "human",
         assignedToId: userId,
+        assignedAt: contact.assignedAt ?? now,
+        assumeWaitSeconds: contact.assumeWaitSeconds ?? assumeWaitSeconds,
         offeredToId: null,
         offeredAt: null,
         openToAll: false,
@@ -616,6 +676,7 @@ export async function createCatalogLead(opts: {
 
   const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
   const preview = (opts.message || `Lead catálogo: ${opts.name}`).slice(0, 120);
+  const now = new Date();
 
   const contact = await prisma.whatsAppContact.upsert({
     where: { phone },
@@ -623,21 +684,25 @@ export async function createCatalogLead(opts: {
       phone,
       name: opts.name,
       status: "waiting",
-      lastMessageAt: new Date(),
+      lastMessageAt: now,
       lastMessagePreview: preview,
-      lastClientMessageAt: new Date(),
+      lastClientMessageAt: now,
       openToAll: true,
+      openedToAllAt: now,
       queueId: queue?.id ?? null,
     },
     update: {
       name: opts.name,
       status: "waiting",
-      lastMessageAt: new Date(),
+      lastMessageAt: now,
       lastMessagePreview: preview,
-      lastClientMessageAt: new Date(),
+      lastClientMessageAt: now,
       assignedToId: null,
+      assignedAt: null,
+      assumeWaitSeconds: null,
       offeredToId: null,
       openToAll: true,
+      openedToAllAt: now,
       queueId: queue?.id ?? null,
       rating: null,
       ratingAskedAt: null,

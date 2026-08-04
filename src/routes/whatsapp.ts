@@ -458,6 +458,106 @@ whatsappRouter.delete("/unavailability/:id", async (req, res) => {
   }
 });
 
+function canManageUser(req: { user?: { id: string; role: string } }, userId: string) {
+  return req.user?.role === "admin" || req.user?.id === userId;
+}
+
+whatsappRouter.get("/users/:id/schedule", async (req, res) => {
+  res.json(
+    await prisma.userScheduleSlot.findMany({
+      where: { userId: req.params.id },
+      orderBy: [{ dayOfWeek: "asc" }, { startMin: "asc" }],
+    })
+  );
+});
+
+whatsappRouter.post("/users/:id/schedule", async (req, res) => {
+  try {
+    if (!canManageUser(req, req.params.id)) {
+      res.status(403).json({ error: "Sem permissão" });
+      return;
+    }
+    const dayOfWeek = Number(req.body?.dayOfWeek);
+    const startMin = Number(req.body?.startMin);
+    const endMin = Number(req.body?.endMin);
+    if (
+      !Number.isInteger(dayOfWeek) ||
+      dayOfWeek < 0 ||
+      dayOfWeek > 6 ||
+      !Number.isFinite(startMin) ||
+      !Number.isFinite(endMin) ||
+      startMin < 0 ||
+      endMin > 24 * 60 ||
+      endMin <= startMin
+    ) {
+      res.status(400).json({ error: "Intervalo inválido (dia 0–6, início < fim)" });
+      return;
+    }
+    const row = await prisma.userScheduleSlot.create({
+      data: { userId: req.params.id, dayOfWeek, startMin, endMin },
+    });
+    res.status(201).json(row);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.delete("/schedule/:id", async (req, res) => {
+  try {
+    await prisma.userScheduleSlot.delete({ where: { id: req.params.id } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/users/:id/leaves", async (req, res) => {
+  res.json(
+    await prisma.userLeave.findMany({
+      where: { userId: req.params.id },
+      orderBy: { startsAt: "desc" },
+    })
+  );
+});
+
+whatsappRouter.post("/users/:id/leaves", async (req, res) => {
+  try {
+    if (!canManageUser(req, req.params.id)) {
+      res.status(403).json({ error: "Sem permissão" });
+      return;
+    }
+    const startsAt = new Date(String(req.body?.startsAt ?? ""));
+    const endsAt = new Date(String(req.body?.endsAt ?? ""));
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt < startsAt) {
+      res.status(400).json({ error: "Informe startsAt e endsAt válidos" });
+      return;
+    }
+    const typeRaw = String(req.body?.type ?? "outro");
+    const type = ["ferias", "folga", "outro"].includes(typeRaw) ? typeRaw : "outro";
+    const row = await prisma.userLeave.create({
+      data: {
+        userId: req.params.id,
+        type,
+        label: req.body?.label ? String(req.body.label) : null,
+        startsAt,
+        endsAt,
+      },
+    });
+    res.status(201).json(row);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.delete("/leaves/:id", async (req, res) => {
+  try {
+    await prisma.userLeave.delete({ where: { id: req.params.id } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 whatsappRouter.delete("/agents/:id", async (req, res) => {
   try {
     await prisma.whatsAppAgent.delete({ where: { id: req.params.id } });
