@@ -16,6 +16,17 @@ export async function runScrapeJob(): Promise<{ jobId: string }> {
   return { jobId: job.id };
 }
 
+/** Mesmo scrape, mas aguarda o fim (usado pelo automático do Gestor). */
+export async function runScrapeJobAndWait() {
+  if (running) {
+    throw new Error("Já existe um scrape em andamento");
+  }
+
+  const job = await prisma.scrapeJob.create({ data: { status: "queued" } });
+  await executeJob(job.id);
+  return prisma.scrapeJob.findUniqueOrThrow({ where: { id: job.id } });
+}
+
 async function executeJob(jobId: string): Promise<void> {
   running = true;
   await prisma.scrapeJob.update({

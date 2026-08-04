@@ -4,6 +4,10 @@ import { prisma } from "./db.js";
 import { adminRequired, authRequired } from "./services/auth.js";
 import { dispatchPending, resetDispatchStatus } from "./services/boletos.js";
 import { todayYmd } from "./services/csv.js";
+import {
+  getGestorAutomation,
+  updateGestorAutomation,
+} from "./services/gestor-automation.js";
 import { importCsvBuffer, runScrapeJob } from "./services/jobs.js";
 import {
   recordWebhookHit,
@@ -168,5 +172,31 @@ router.delete("/boletos", ...adminOnly, async (_req, res) => {
     res.json({ deletedBoletos: boletos.count, deletedJobs: jobs.count });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/gestor/automation", ...adminOnly, async (_req, res) => {
+  try {
+    res.json(await getGestorAutomation());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.patch("/gestor/automation", ...adminOnly, async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const updated = await updateGestorAutomation({
+      enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+      runTimeHHMM: typeof body.runTimeHHMM === "string" ? body.runTimeHHMM : undefined,
+      weekdays: Array.isArray(body.weekdays) ? body.weekdays : undefined,
+      dispatchAfterScrape:
+        typeof body.dispatchAfterScrape === "boolean" ? body.dispatchAfterScrape : undefined,
+    });
+    res.json(updated);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = message.includes("inválido") || message.includes("Selecione") ? 400 : 500;
+    res.status(code).json({ error: message });
   }
 });
