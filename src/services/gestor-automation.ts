@@ -112,7 +112,20 @@ export async function tickGestorAutomation() {
   if (nowMin < target) return;
 
   const ymd = todayYmd();
-  if (cfg.lastRunYmd === ymd) return;
+  // Sucesso (ou em andamento) trava o dia. Falha libera retry num horário posterior.
+  if (cfg.lastRunYmd === ymd && cfg.lastRunStatus !== "failed") return;
+
+  if (cfg.lastRunStatus === "failed" && cfg.lastRunAt) {
+    const lastSp = new Date(
+      cfg.lastRunAt.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" })
+    );
+    const lastYmd = `${lastSp.getFullYear()}-${String(lastSp.getMonth() + 1).padStart(2, "0")}-${String(lastSp.getDate()).padStart(2, "0")}`;
+    if (lastYmd === ymd) {
+      const lastMin = minutesOfDay(lastSp);
+      // Evita loop a cada 30s: só tenta de novo no minuto agendado, se for depois da falha
+      if (nowMin !== target || target <= lastMin) return;
+    }
+  }
 
   tickRunning = true;
   try {
@@ -132,6 +145,7 @@ export async function tickGestorAutomation() {
         where: { id: "default" },
         data: {
           lastRunStatus: "failed",
+          lastRunYmd: null,
           lastRunMessage: `Scrape falhou: ${job.message ?? job.status}`,
         },
       });
@@ -158,6 +172,7 @@ export async function tickGestorAutomation() {
       where: { id: "default" },
       data: {
         lastRunStatus: "failed",
+        lastRunYmd: null,
         lastRunMessage: message.slice(0, 1000),
       },
     });
