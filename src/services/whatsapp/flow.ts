@@ -170,6 +170,39 @@ async function persistBotOut(
   });
 }
 
+/** Admin: devolve o cliente ao menu do bot. */
+export async function restartToBot(contactId: string) {
+  await prisma.whatsAppContact.update({
+    where: { id: contactId },
+    data: {
+      status: "bot",
+      botMenuStep: "department",
+      assignedToId: null,
+      assignedAt: null,
+      assumeWaitSeconds: null,
+      offeredToId: null,
+      offeredAt: null,
+      firstOfferedAt: null,
+      firstOfferedToId: null,
+      openedToAllAt: null,
+      openToAll: false,
+      queueId: null,
+      inactivityWarnedAt: null,
+      ratingAskedAt: null,
+      unreadCount: 0,
+    },
+  });
+  await sendDepartmentMenu(contactId);
+  return prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+    include: {
+      assignedTo: { select: { id: true, name: true } },
+      offeredTo: { select: { id: true, name: true } },
+      queue: { select: { id: true, name: true } },
+    },
+  });
+}
+
 /** Menu departamento (Financeiro / Atendimento). */
 export async function sendDepartmentMenu(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({

@@ -8,6 +8,7 @@ import { authRequired, changePassword, createUser, login } from "../services/aut
 import {
   ensureFlow,
   getFlow,
+  restartToBot,
   type FlowOption,
 } from "../services/whatsapp/flow.js";
 import {
@@ -280,6 +281,23 @@ whatsappRouter.post("/contacts/assign", async (req, res) => {
 whatsappRouter.post("/contacts/resolve", async (req, res) => {
   try {
     res.json(await resolveContact(String(req.body?.contactId ?? "")));
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/contacts/restart-bot", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin pode reiniciar no bot" });
+      return;
+    }
+    const contactId = String(req.body?.contactId ?? "");
+    if (!contactId) {
+      res.status(400).json({ error: "contactId obrigatório" });
+      return;
+    }
+    res.json(await restartToBot(contactId));
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
