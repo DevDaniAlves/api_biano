@@ -55,7 +55,7 @@ export class EvolutionClient {
     return jid.split("@")[0].replace(/\D/g, "");
   }
 
-  /** LID + telefone do webhook (WhatsApp addressingMode=lid). */
+  /** Telefone + JID de resposta = o mesmo que o WhatsApp usou nesta mensagem. */
   static identityFromKey(key: Record<string, unknown>, data?: Record<string, unknown>) {
     const remoteJid = String(key.remoteJid ?? "");
     const remoteJidAlt = String(key.remoteJidAlt ?? "");
@@ -69,7 +69,7 @@ export class EvolutionClient {
       (senderPn ? `${String(senderPn).replace(/\D/g, "")}@s.whatsapp.net` : "");
     const phone =
       EvolutionClient.phoneFromJid(pnJid) || EvolutionClient.toNumber(senderPn);
-    const sendJid = lidJid || pnJid || remoteJid;
+    const sendJid = remoteJid || pnJid || lidJid;
     return { phone, sendJid, lidJid, pnJid, remoteJid, remoteJidAlt };
   }
 
