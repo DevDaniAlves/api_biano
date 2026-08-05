@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
+import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 import { evolution, EvolutionClient } from "./evolution.js";
 import {
   assumeOnOpen,
@@ -531,6 +532,31 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
 
     if (isNew || fresh.status === "bot" || fresh.status === "closed") {
       await processInboundBot(contact.id, body, isNew || fresh.status === "closed");
+      return;
+    }
+
+    const preview = (body ?? "[mensagem]").slice(0, 120);
+    const who = fresh.name || fresh.phone;
+    if (fresh.status === "human" && fresh.assignedToId) {
+      notifyUsersSafe([fresh.assignedToId], {
+        title: who,
+        body: preview,
+        contactId: fresh.id,
+      });
+    } else if (fresh.status === "waiting" && fresh.offeredToId && !fresh.openToAll) {
+      notifyUsersSafe([fresh.offeredToId], {
+        title: who,
+        body: preview,
+        contactId: fresh.id,
+      });
+    } else if (fresh.status === "waiting" && fresh.openToAll) {
+      void recipientIdsForOpenQueue(fresh.queueId).then((ids) => {
+        notifyUsersSafe(ids, {
+          title: who,
+          body: preview,
+          contactId: fresh.id,
+        });
+      });
     }
     return;
   }

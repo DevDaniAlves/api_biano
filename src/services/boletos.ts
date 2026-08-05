@@ -119,6 +119,28 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+let dispatchGeneration = 0;
+let dispatchRunning = false;
+
+export function cancelActiveDispatch() {
+  dispatchGeneration += 1;
+}
+
+export function isDispatchRunning() {
+  return dispatchRunning;
+}
+
+async function sleepWhileActive(ms: number, token: number) {
+  const step = 500;
+  let left = ms;
+  while (left > 0) {
+    if (token !== dispatchGeneration) return;
+    const chunk = Math.min(step, left);
+    await sleep(chunk);
+    left -= chunk;
+  }
+}
+
 /** Pausa aleatória de 1 a 2 minutos entre disparos. */
 function randomDispatchDelayMs() {
   return 60_000 + Math.floor(Math.random() * 60_001);
@@ -133,74 +155,86 @@ function resolveDispatchPhone(boletoPhone: string): string {
 }
 
 export async function dispatchPending(vencimento?: string) {
-  const where = {
-    status: "pending" as const,
-    ...(vencimento ? { vencimento } : {}),
-  };
+  cancelActiveDispatch();
+  const token = dispatchGeneration;
+  dispatchRunning = true;
 
-  const boletos = await prisma.boleto.findMany({ where, orderBy: { clienteNome: "asc" } });
-  let sent = 0;
-  let failed = 0;
-  let skipped = 0;
+  try {
+    const where = {
+      status: "pending" as const,
+      ...(vencimento ? { vencimento } : {}),
+    };
 
-  const instance = await evolution.resolveInstance();
-  console.log(
-    `[dispatch] início: ${boletos.length} pending | url=${env.WHATSAPP_API_URL} | instance=${instance || "(QR não conectado)"} | override=${env.WHATSAPP_OVERRIDE_PHONE ?? "-"}`
-  );
+    const boletos = await prisma.boleto.findMany({ where, orderBy: { clienteNome: "asc" } });
+    let sent = 0;
+    let failed = 0;
+    let skipped = 0;
 
-  for (let i = 0; i < boletos.length; i++) {
-    const b = boletos[i];
-    const phone = resolveDispatchPhone(b.clienteTelefone);
-    if (!phone || phone.length < 12) {
-      console.warn(`[dispatch] SKIP #${b.id} telefone inválido: ${b.clienteTelefone}`);
-      await prisma.boleto.update({
-        where: { id: b.id },
-        data: { status: "skipped", dispatchError: "Telefone inválido" },
-      });
-      skipped++;
-      continue;
-    }
-
-    const text = renderMessage(b);
+    const instance = await evolution.resolveInstance();
     console.log(
-      `[dispatch] #${b.id} ${b.clienteNome} → ${phone}` +
-        (env.WHATSAPP_OVERRIDE_PHONE ? " (override)" : "")
+      `[dispatch] início: ${boletos.length} pending | url=${env.WHATSAPP_API_URL} | instance=${instance || "(QR não conectado)"} | override=${env.WHATSAPP_OVERRIDE_PHONE ?? "-"}`
     );
-    const result = await sendWhatsApp(phone, text);
 
-    if (result.ok) {
-      console.log(`[dispatch] OK #${b.id}`);
-      await prisma.boleto.update({
-        where: { id: b.id },
-        data: { status: "sent", dispatchedAt: new Date(), dispatchError: null },
+    for (let i = 0; i < boletos.length; i++) {
+      if (token !== dispatchGeneration) {
+        console.log("[dispatch] cancelado para iniciar novo disparo");
+        break;
+      }
+      const b = boletos[i];
+      const phone = resolveDispatchPhone(b.clienteTelefone);
+      if (!phone || phone.length < 12) {
+        console.warn(`[dispatch] SKIP #${b.id} telefone inválido: ${b.clienteTelefone}`);
+        await prisma.boleto.update({
+          where: { id: b.id },
+          data: { status: "skipped", dispatchError: "Telefone inválido" },
+        });
+        skipped++;
+        continue;
+      }
+
+      const text = renderMessage(b);
+      console.log(
+        `[dispatch] #${b.id} ${b.clienteNome} → ${phone}` +
+          (env.WHATSAPP_OVERRIDE_PHONE ? " (override)" : "")
+      );
+      const result = await sendWhatsApp(phone, text);
+
+      if (result.ok) {
+        console.log(`[dispatch] OK #${b.id}`);
+        await prisma.boleto.update({
+          where: { id: b.id },
+          data: { status: "sent", dispatchedAt: new Date(), dispatchError: null },
+        });
+        sent++;
+      } else {
+        console.error(`[dispatch] FALHA #${b.id}: ${result.error}`);
+        await prisma.boleto.update({
+          where: { id: b.id },
+          data: {
+            status: "failed",
+            dispatchedAt: new Date(),
+            dispatchError: result.error?.slice(0, 1000),
+          },
+        });
+        failed++;
+      }
+
+      const hasMore = boletos.slice(i + 1).some((next) => {
+        const p = resolveDispatchPhone(next.clienteTelefone);
+        return p && p.length >= 12;
       });
-      sent++;
-    } else {
-      console.error(`[dispatch] FALHA #${b.id}: ${result.error}`);
-      await prisma.boleto.update({
-        where: { id: b.id },
-        data: {
-          status: "failed",
-          dispatchedAt: new Date(),
-          dispatchError: result.error?.slice(0, 1000),
-        },
-      });
-      failed++;
+      if (hasMore) {
+        const ms = randomDispatchDelayMs();
+        console.log(`[dispatch] pausa ${Math.round(ms / 1000)}s até o próximo`);
+        await sleepWhileActive(ms, token);
+      }
     }
 
-    const hasMore = boletos.slice(i + 1).some((next) => {
-      const p = resolveDispatchPhone(next.clienteTelefone);
-      return p && p.length >= 12;
-    });
-    if (hasMore) {
-      const ms = randomDispatchDelayMs();
-      console.log(`[dispatch] pausa ${Math.round(ms / 1000)}s até o próximo`);
-      await sleep(ms);
-    }
+    console.log(`[dispatch] fim: sent=${sent} failed=${failed} skipped=${skipped}`);
+    return { total: boletos.length, sent, failed, skipped };
+  } finally {
+    if (token === dispatchGeneration) dispatchRunning = false;
   }
-
-  console.log(`[dispatch] fim: sent=${sent} failed=${failed} skipped=${skipped}`);
-  return { total: boletos.length, sent, failed, skipped };
 }
 
 /** Volta sent/failed/skipped → pending (para retestar disparo). */

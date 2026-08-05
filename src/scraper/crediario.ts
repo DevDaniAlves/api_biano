@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium, type Page } from "playwright";
+import { chromium, type Browser, type Page } from "playwright";
 import { env } from "../config.js";
 import {
   type CsvBoletoRow,
@@ -14,6 +14,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
 
 const API_BASE = "https://gestao.meucrediario.com.br/api";
+
+let activeBrowser: Browser | null = null;
+
+/** Fecha o Playwright em andamento (cancelar coleta). */
+export async function abortActiveBrowser() {
+  const browser = activeBrowser;
+  activeBrowser = null;
+  if (browser) await browser.close().catch(() => {});
+}
 
 /** Filtro "Hoje" = diasVencimento: 0 (capturado do Network do Gestão). */
 const FILTRO_HOJE = {
@@ -54,6 +63,7 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
   fs.mkdirSync(screenshotsDir, { recursive: true });
 
   const browser = await chromium.launch({ headless: env.HEADLESS });
+  activeBrowser = browser;
   const context = await browser.newContext({
     locale: "pt-BR",
     timezoneId: "America/Sao_Paulo",
@@ -108,7 +118,8 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
     await page.screenshot({ path: path.join(screenshotsDir, "erro.png"), fullPage: true }).catch(() => {});
     throw err;
   } finally {
-    await browser.close();
+    await browser.close().catch(() => {});
+    if (activeBrowser === browser) activeBrowser = null;
   }
 }
 

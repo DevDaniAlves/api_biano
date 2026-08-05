@@ -40,6 +40,9 @@ const schema = z.object({
   RATING_TIMEOUT_MINUTES: z.coerce.number().default(5),
   INACTIVITY_WARN_MINUTES: z.coerce.number().default(10),
   INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(15),
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default("mailto:contato@calangusmodajovem.com"),
 });
 
 export const env = schema.parse(process.env);

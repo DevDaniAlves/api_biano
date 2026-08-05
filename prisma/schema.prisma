@@ -103,6 +103,21 @@ model User {
   unavailabilities UserUnavailability[]
   scheduleSlots UserScheduleSlot[]
   leaves        UserLeave[]
+  pushSubs      PushSubscription[]
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 /** Intervalos de atendimento semanais (ex.: seg 08:00–12:00 e 13:00–18:00). */

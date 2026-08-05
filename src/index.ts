@@ -11,7 +11,8 @@ import { whatsappRouter } from "./routes/whatsapp.js";
 import { swaggerSpec } from "./swagger.js";
 import { expireStaleOffers } from "./services/whatsapp/flow.js";
 import { expireStaleRatings, UPLOADS_DIR } from "./services/whatsapp/service.js";
-import { tickGestorAutomation } from "./services/gestor-automation.js";
+import { failStaleAutomationRun, tickGestorAutomation } from "./services/gestor-automation.js";
+import { failStaleRunningJobs } from "./services/jobs.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -30,6 +31,8 @@ app.use("/whatsapp", whatsappRouter);
 const server = app.listen(env.PORT, () => {
   console.log(`API http://localhost:${env.PORT}`);
   console.log(`Swagger http://localhost:${env.PORT}/docs`);
+  void failStaleRunningJobs();
+  void failStaleAutomationRun();
   setInterval(() => {
     expireStaleOffers().catch((e) => console.error("[fila]", e));
     expireStaleRatings().catch((e) => console.error("[rating]", e));

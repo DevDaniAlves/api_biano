@@ -60,6 +60,27 @@ export async function login(email: string, password: string) {
   return { user: payload, token: signToken(payload) };
 }
 
+export async function changePassword(opts: {
+  userId: string;
+  currentPassword: string;
+  newPassword: string;
+}) {
+  const next = opts.newPassword.trim();
+  if (next.length < 6) {
+    throw new Error("A nova senha deve ter pelo menos 6 caracteres");
+  }
+  const user = await prisma.user.findUnique({ where: { id: opts.userId } });
+  if (!user?.active) throw new Error("Usuário não encontrado");
+  const ok = await bcrypt.compare(opts.currentPassword, user.passwordHash);
+  if (!ok) throw new Error("Senha atual incorreta");
+  const same = await bcrypt.compare(next, user.passwordHash);
+  if (same) throw new Error("A nova senha deve ser diferente da atual");
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash: await bcrypt.hash(next, 10) },
+  });
+}
+
 export async function createUser(data: {
   name: string;
   email: string;

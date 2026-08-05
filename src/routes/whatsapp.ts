@@ -4,7 +4,7 @@ import { Router } from "express";
 import multer from "multer";
 import { env } from "../config.js";
 import { prisma } from "../db.js";
-import { authRequired, createUser, login } from "../services/auth.js";
+import { authRequired, changePassword, createUser, login } from "../services/auth.js";
 import {
   ensureFlow,
   getFlow,
@@ -15,6 +15,11 @@ import {
   webhookStatusPayload,
 } from "../services/whatsapp/webhook-hits.js";
 import { evolution } from "../services/whatsapp/evolution.js";
+import {
+  deletePushSubscription,
+  getVapidPublicKey,
+  savePushSubscription,
+} from "../services/push.js";
 import {
   UPLOADS_DIR,
   assignContact,
@@ -100,6 +105,71 @@ whatsappRouter.get("/webhook/status", (_req, res) => {
 });
 
 whatsappRouter.use(authRequired);
+
+whatsappRouter.get("/push/vapid-public", (_req, res) => {
+  const key = getVapidPublicKey();
+  if (!key) {
+    res.status(503).json({ error: "Push não configurado (VAPID)" });
+    return;
+  }
+  res.json({ publicKey: key });
+});
+
+whatsappRouter.post("/push/subscribe", async (req, res) => {
+  try {
+    const endpoint = String(req.body?.endpoint ?? "");
+    const p256dh = String(req.body?.keys?.p256dh ?? req.body?.p256dh ?? "");
+    const auth = String(req.body?.keys?.auth ?? req.body?.auth ?? "");
+    if (!endpoint || !p256dh || !auth) {
+      res.status(400).json({ error: "Subscription inválida" });
+      return;
+    }
+    await savePushSubscription({
+      userId: req.user!.id,
+      endpoint,
+      p256dh,
+      auth,
+      userAgent: req.get("user-agent"),
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.delete("/push/subscribe", async (req, res) => {
+  try {
+    const endpoint = String(req.body?.endpoint ?? req.query.endpoint ?? "");
+    if (!endpoint) {
+      res.status(400).json({ error: "endpoint obrigatório" });
+      return;
+    }
+    await deletePushSubscription(endpoint, req.user!.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/auth/password", async (req, res) => {
+  try {
+    await changePassword({
+      userId: req.user!.id,
+      currentPassword: String(req.body?.currentPassword ?? ""),
+      newPassword: String(req.body?.newPassword ?? ""),
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const code =
+      message.includes("incorreta") ||
+      message.includes("diferente") ||
+      message.includes("6 caracteres")
+        ? 400
+        : 500;
+    res.status(code).json({ error: message });
+  }
+});
 
 whatsappRouter.get("/contacts", async (req, res) => {
   try {

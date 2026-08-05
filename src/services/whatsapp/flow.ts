@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
+import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 import { evolution, EvolutionClient } from "./evolution.js";
 import {
   BUSINESS,
@@ -215,7 +216,7 @@ export async function offerToAgent(opts: {
   });
 
   if (available) {
-    return prisma.whatsAppContact.update({
+    const updated = await prisma.whatsAppContact.update({
       where: { id: opts.contactId },
       data: {
         status: "waiting",
@@ -230,9 +231,16 @@ export async function offerToAgent(opts: {
         firstOfferedToId: existing.firstOfferedToId ?? opts.userId,
       },
     });
+    notifyUsersSafe([opts.userId], {
+      title: "Nova conversa na fila",
+      body: `${updated.name || updated.phone} está aguardando você`,
+      contactId: updated.id,
+      tag: `wa-offer-${updated.id}`,
+    });
+    return updated;
   }
 
-  return prisma.whatsAppContact.update({
+  const updated = await prisma.whatsAppContact.update({
     where: { id: opts.contactId },
     data: {
       status: "waiting",
@@ -246,6 +254,15 @@ export async function offerToAgent(opts: {
       assumeWaitSeconds: null,
     },
   });
+  void recipientIdsForOpenQueue(updated.queueId).then((ids) => {
+    notifyUsersSafe(ids, {
+      title: "Conversa aberta",
+      body: `${updated.name || updated.phone} está aguardando atendimento`,
+      contactId: updated.id,
+      tag: `wa-open-${updated.id}`,
+    });
+  });
+  return updated;
 }
 
 /** Fila sequencial: próximo agente disponível na ordem. */
@@ -262,7 +279,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
 
   if (queue.agents.length === 0) {
     const now = new Date();
-    return prisma.whatsAppContact.update({
+    const updated = await prisma.whatsAppContact.update({
       where: { id: contactId },
       data: {
         status: "waiting",
@@ -276,6 +293,15 @@ export async function offerFromQueue(contactId: string, queueId: string) {
         assumeWaitSeconds: null,
       },
     });
+    void recipientIdsForOpenQueue(queueId).then((ids) => {
+      notifyUsersSafe(ids, {
+        title: "Conversa aberta",
+        body: `${updated.name || updated.phone} está aguardando atendimento`,
+        contactId: updated.id,
+        tag: `wa-open-${updated.id}`,
+      });
+    });
+    return updated;
   }
 
   const n = queue.agents.length;
@@ -298,7 +324,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
 
   if (!picked) {
     const now = new Date();
-    return prisma.whatsAppContact.update({
+    const updated = await prisma.whatsAppContact.update({
       where: { id: contactId },
       data: {
         status: "waiting",
@@ -312,6 +338,15 @@ export async function offerFromQueue(contactId: string, queueId: string) {
         assumeWaitSeconds: null,
       },
     });
+    void recipientIdsForOpenQueue(queueId).then((ids) => {
+      notifyUsersSafe(ids, {
+        title: "Conversa aberta",
+        body: `${updated.name || updated.phone} está aguardando atendimento`,
+        contactId: updated.id,
+        tag: `wa-open-${updated.id}`,
+      });
+    });
+    return updated;
   }
 
   return offerToAgent({
@@ -494,6 +529,14 @@ export async function expireStaleOffers() {
       },
     });
     console.log(`[fila] oferta expirada → aberta a todos: ${c.phone}`);
+    void recipientIdsForOpenQueue(c.queueId).then((ids) => {
+      notifyUsersSafe(ids, {
+        title: "Conversa aberta",
+        body: `${c.name || c.phone} ficou disponível para a equipe`,
+        contactId: c.id,
+        tag: `wa-open-${c.id}`,
+      });
+    });
   }
   return stale.length;
 }
@@ -518,6 +561,14 @@ export async function expireStaleRatings() {
       },
     });
     console.log(`[rating] timeout → closed: ${c.phone}`);
+    if (c.assignedToId) {
+      notifyUsersSafe([c.assignedToId], {
+        title: "Avaliação expirada",
+        body: `${c.name || c.phone} — conversa encerrada sem nota`,
+        contactId: c.id,
+        tag: `wa-rating-${c.id}`,
+      });
+    }
   }
   return stale.length;
 }

@@ -50,8 +50,7 @@ router.post("/scrape", ...adminOnly, async (_req, res) => {
     res.status(202).json({ jobId, status: "queued" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const code = message.includes("em andamento") ? 409 : 500;
-    res.status(code).json({ error: message });
+    res.status(500).json({ error: message });
   }
 });
 

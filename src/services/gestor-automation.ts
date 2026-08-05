@@ -1,8 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
 import { todayYmd } from "./csv.js";
-import { dispatchPending } from "./boletos.js";
-import { runScrapeJobAndWait } from "./jobs.js";
+import { cancelActiveDispatch, dispatchPending, isDispatchRunning } from "./boletos.js";
+import { cancelActiveScrapes, isScrapeRunning, runScrapeJobAndWait } from "./jobs.js";
 import { minutesOfDay, nowInSaoPaulo } from "./whatsapp/schedule.js";
 
 const DEFAULT_WEEKDAYS = [1, 2, 3, 4, 5];
@@ -111,8 +111,24 @@ export async function resetGestorAutomationRun() {
 }
 
 let tickRunning = false;
+let autoGeneration = 0;
 
-async function executeAutomationOnce() {
+export async function failStaleAutomationRun() {
+  const row = await prisma.gestorAutomation.findUnique({ where: { id: "default" } });
+  if (row?.lastRunStatus !== "running") return;
+  await prisma.gestorAutomation.update({
+    where: { id: "default" },
+    data: {
+      lastRunStatus: "failed",
+      lastRunYmd: null,
+      lastRunMessage: "Interrompido (reinício do servidor)",
+    },
+  });
+  console.log("[gestor-auto] execução órfã cancelada");
+}
+
+async function executeAutomationOnce(token: number) {
+  const alive = () => token === autoGeneration;
   const cfg = await ensureGestorAutomation();
   const ymd = todayYmd();
 
@@ -127,6 +143,7 @@ async function executeAutomationOnce() {
   });
 
   const job = await runScrapeJobAndWait();
+  if (!alive()) return { ok: false as const, message: "cancelado" };
   if (job.status !== "success") {
     await prisma.gestorAutomation.update({
       where: { id: "default" },
@@ -142,9 +159,11 @@ async function executeAutomationOnce() {
   let msg = `Scrape OK: ${job.rowsUpserted} boleto(s)`;
   if (cfg.dispatchAfterScrape) {
     const d = await dispatchPending(ymd);
+    if (!alive()) return { ok: false as const, message: "cancelado" };
     msg += ` · Disparo: ${d.sent} enviados, ${d.failed} falhas, ${d.skipped} ignorados`;
   }
 
+  if (!alive()) return { ok: false as const, message: "cancelado" };
   await prisma.gestorAutomation.update({
     where: { id: "default" },
     data: {
@@ -158,22 +177,31 @@ async function executeAutomationOnce() {
 
 /** Dispara agora (teste), ignorando horário e trava do dia. */
 export async function runGestorAutomationNow() {
-  if (tickRunning) throw new Error("Já existe uma execução automática em andamento");
+  autoGeneration += 1;
+  const token = autoGeneration;
   tickRunning = true;
-  const ymd = todayYmd();
-  await prisma.gestorAutomation.update({
-    where: { id: "default" },
-    data: {
-      lastRunAt: new Date(),
-      lastRunYmd: ymd,
-      lastRunStatus: "running",
-      lastRunMessage: "Coletando (Playwright)…",
-    },
-  });
+  try {
+    await cancelActiveScrapes("Cancelado para iniciar nova execução");
+    cancelActiveDispatch();
+    const ymd = todayYmd();
+    await prisma.gestorAutomation.update({
+      where: { id: "default" },
+      data: {
+        lastRunAt: new Date(),
+        lastRunYmd: ymd,
+        lastRunStatus: "running",
+        lastRunMessage: "Coletando (Playwright)…",
+      },
+    });
+  } catch (err) {
+    if (token === autoGeneration) tickRunning = false;
+    throw err;
+  }
   void (async () => {
     try {
-      await executeAutomationOnce();
+      await executeAutomationOnce(token);
     } catch (err) {
+      if (token !== autoGeneration) return;
       const message = err instanceof Error ? err.message : String(err);
       await prisma.gestorAutomation.update({
         where: { id: "default" },
@@ -185,7 +213,7 @@ export async function runGestorAutomationNow() {
       });
       console.error("[gestor-auto]", message);
     } finally {
-      tickRunning = false;
+      if (token === autoGeneration) tickRunning = false;
     }
   })();
   return { started: true, message: "Execução iniciada" };
@@ -193,7 +221,7 @@ export async function runGestorAutomationNow() {
 
 /** Chamado a cada ~30s: se automático ativo e horário SP bate, scrape (+ disparo). */
 export async function tickGestorAutomation() {
-  if (tickRunning) return;
+  if (tickRunning || isScrapeRunning() || isDispatchRunning()) return;
   const cfg = await ensureGestorAutomation();
   if (!cfg.enabled) return;
 
@@ -224,10 +252,13 @@ export async function tickGestorAutomation() {
     }
   }
 
+  autoGeneration += 1;
+  const token = autoGeneration;
   tickRunning = true;
   try {
-    await executeAutomationOnce();
+    await executeAutomationOnce(token);
   } catch (err) {
+    if (token !== autoGeneration) return;
     const message = err instanceof Error ? err.message : String(err);
     await prisma.gestorAutomation.update({
       where: { id: "default" },
@@ -239,6 +270,6 @@ export async function tickGestorAutomation() {
     });
     console.error("[gestor-auto]", message);
   } finally {
-    tickRunning = false;
+    if (token === autoGeneration) tickRunning = false;
   }
 }
