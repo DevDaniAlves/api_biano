@@ -160,20 +160,78 @@ export class EvolutionClient {
     return r;
   }
 
-  async createInstance(instanceName: string) {
+  async createInstance(instanceName: string, number?: string) {
     return this.req("POST", "/instance/create", {
       instanceName,
       integration: "WHATSAPP-BAILEYS",
       qrcode: true,
+      ...(number ? { number } : {}),
     });
   }
 
-  async connectInstance(instanceName: string) {
-    return this.req("GET", `/instance/connect/${encodeURIComponent(instanceName)}`);
+  async connectInstance(instanceName: string, number?: string) {
+    const q = number ? `?number=${encodeURIComponent(number)}` : "";
+    return this.req("GET", `/instance/connect/${encodeURIComponent(instanceName)}${q}`);
   }
 
   async connectionState(instanceName: string) {
     return this.req("GET", `/instance/connectionState/${encodeURIComponent(instanceName)}`);
+  }
+
+  async fetchInstances() {
+    return this.req("GET", "/instance/fetchInstances");
+  }
+
+  static parseInstanceList(data: unknown): Array<Record<string, unknown>> {
+    if (Array.isArray(data)) return data as Array<Record<string, unknown>>;
+    if (data && typeof data === "object") {
+      const o = data as Record<string, unknown>;
+      for (const key of ["value", "instances", "data", "response"]) {
+        if (Array.isArray(o[key])) return o[key] as Array<Record<string, unknown>>;
+      }
+    }
+    return [];
+  }
+
+  static extractPairingCode(data: unknown): string | null {
+    const bag: unknown[] = [];
+    if (Array.isArray(data)) bag.push(...data);
+    else if (data && typeof data === "object") {
+      const o = data as Record<string, unknown>;
+      bag.push(data, o.qrcode, o.response);
+      if (Array.isArray(o.response)) bag.push(...o.response);
+    }
+    for (const item of bag) {
+      if (!item || typeof item !== "object") continue;
+      const pc = (item as { pairingCode?: unknown }).pairingCode;
+      if (typeof pc !== "string") continue;
+      const clean = pc.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (clean.length >= 6 && !clean.includes("@")) return clean;
+    }
+    return null;
+  }
+
+  static extractQrBase64(data: unknown): string | null {
+    if (!data || typeof data !== "object") return null;
+    const o = data as Record<string, unknown>;
+    const nested = o.qrcode && typeof o.qrcode === "object" ? (o.qrcode as Record<string, unknown>) : null;
+    const qr =
+      (typeof o.base64 === "string" && o.base64) ||
+      (typeof nested?.base64 === "string" && nested.base64) ||
+      (typeof o.qrcode === "string" && o.qrcode) ||
+      null;
+    return qr || null;
+  }
+
+  static extractLiveState(data: unknown): string {
+    if (!data || typeof data !== "object") return "";
+    const o = data as Record<string, unknown>;
+    const inst = (o.instance ?? o.response) as Record<string, unknown> | undefined;
+    const nested =
+      inst && typeof inst === "object"
+        ? String(inst.state ?? inst.connectionStatus ?? inst.status ?? "")
+        : "";
+    return nested || String(o.state ?? o.connectionStatus ?? o.status ?? "");
   }
 
   async logoutInstance(instanceName: string) {
@@ -182,6 +240,40 @@ export class EvolutionClient {
 
   async deleteInstance(instanceName: string) {
     return this.req("DELETE", `/instance/delete/${encodeURIComponent(instanceName)}`);
+  }
+
+  async getBase64FromMedia(opts: {
+    remoteJid: string;
+    fromMe: boolean;
+    id: string;
+    message?: Record<string, unknown>;
+  }) {
+    const instance = await this.resolveInstance();
+    if (!instance) {
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
+    }
+    return this.req("POST", `/chat/getBase64FromMediaMessage/${encodeURIComponent(instance)}`, {
+      message: {
+        key: { remoteJid: opts.remoteJid, fromMe: opts.fromMe, id: opts.id },
+        ...(opts.message ? { message: opts.message } : {}),
+      },
+    });
+  }
+
+  static extractMediaBase64(data: unknown): { base64: string; mimetype?: string } | null {
+    if (!data) return null;
+    if (typeof data === "string" && data.length > 80) return { base64: data };
+    if (typeof data !== "object") return null;
+    const o = data as Record<string, unknown>;
+    const nested = o.data && typeof o.data === "object" ? (o.data as Record<string, unknown>) : null;
+    const b64 = o.base64 ?? nested?.base64;
+    if (typeof b64 === "string" && b64.length > 80) {
+      return {
+        base64: b64,
+        mimetype: String(o.mimetype ?? o.mimeType ?? nested?.mimetype ?? "") || undefined,
+      };
+    }
+    return null;
   }
 
   async deleteOwnMessage(remoteJid: string, messageId: string) {

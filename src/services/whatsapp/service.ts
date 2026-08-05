@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +25,108 @@ const RATING_MSG =
 
 const INACTIVITY_MSG =
   "Olá! Ainda está por aí? Caso precise de mais alguma informação, estamos à disposição.";
+
+function mimeExt(mimetype?: string | null, type?: string) {
+  const m = (mimetype || "").toLowerCase();
+  if (m.includes("png")) return "png";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("gif")) return "gif";
+  if (m.includes("mp4") || type === "video") return "mp4";
+  if (m.includes("ogg") || m.includes("opus") || type === "audio") return "ogg";
+  return "jpg";
+}
+
+function saveBase64Media(b64: string, mimetype?: string | null, type?: string) {
+  const raw = b64.replace(/^data:[^;]+;base64,/, "");
+  const buf = Buffer.from(raw, "base64");
+  if (buf.length < 40) return null;
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${mimeExt(mimetype, type)}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, name), buf);
+  return `/uploads/${name}`;
+}
+
+function quotePreviewFromMessage(quoted: Record<string, unknown> | null | undefined) {
+  if (!quoted) return null;
+  if (typeof quoted.conversation === "string" && quoted.conversation.trim()) return quoted.conversation;
+  const ext = quoted.extendedTextMessage;
+  if (ext && typeof ext === "object") {
+    const text = (ext as { text?: string }).text;
+    if (text) return text;
+  }
+  if (quoted.imageMessage) {
+    const cap = (quoted.imageMessage as { caption?: string }).caption;
+    return cap?.trim() || "[imagem]";
+  }
+  if (quoted.videoMessage) return "[vídeo]";
+  if (quoted.audioMessage) return "[áudio]";
+  if (quoted.documentMessage) {
+    return String((quoted.documentMessage as { fileName?: string }).fileName ?? "[documento]");
+  }
+  if (quoted.stickerMessage) return "[figurinha]";
+  return null;
+}
+
+function extractQuote(message: Record<string, unknown>, data: Record<string, unknown>) {
+  const candidates = [
+    data.contextInfo,
+    message.contextInfo,
+    (message.extendedTextMessage as Record<string, unknown> | undefined)?.contextInfo,
+    (message.imageMessage as Record<string, unknown> | undefined)?.contextInfo,
+    (message.videoMessage as Record<string, unknown> | undefined)?.contextInfo,
+    (message.audioMessage as Record<string, unknown> | undefined)?.contextInfo,
+    (message.documentMessage as Record<string, unknown> | undefined)?.contextInfo,
+    (message.stickerMessage as Record<string, unknown> | undefined)?.contextInfo,
+  ];
+  for (const ctx of candidates) {
+    if (!ctx || typeof ctx !== "object") continue;
+    const c = ctx as Record<string, unknown>;
+    const stanzaId = String(c.stanzaId ?? c.stanzaID ?? "").trim();
+    const quoted = (c.quotedMessage as Record<string, unknown> | undefined) ?? undefined;
+    const preview = quotePreviewFromMessage(quoted);
+    if (!stanzaId && !preview) continue;
+    return { stanzaId: stanzaId || null, preview };
+  }
+  return { stanzaId: null as string | null, preview: null as string | null };
+}
+
+async function resolveMediaFile(opts: {
+  type: string;
+  remoteJid: string;
+  fromMe: boolean;
+  externalId: string;
+  message: Record<string, unknown>;
+  data: Record<string, unknown>;
+  fallbackUrl?: string | null;
+}) {
+  if (!["image", "video", "sticker"].includes(opts.type)) return null;
+  const inline =
+    (typeof opts.data.base64 === "string" && opts.data.base64) ||
+    (typeof opts.message.base64 === "string" && opts.message.base64) ||
+    "";
+  if (inline.length > 80) {
+    const saved = saveBase64Media(inline, null, opts.type);
+    if (saved) return saved;
+  }
+  if (opts.externalId && evolution.enabled) {
+    const r = await evolution.getBase64FromMedia({
+      remoteJid: opts.remoteJid,
+      fromMe: opts.fromMe,
+      id: opts.externalId,
+      message: opts.message,
+    });
+    const extracted = EvolutionClient.extractMediaBase64(r.data);
+    if (extracted) {
+      const saved = saveBase64Media(extracted.base64, extracted.mimetype, opts.type);
+      if (saved) return saved;
+    } else if (!r.ok) {
+      console.warn("[media] getBase64 falhou", r.status, (r.text || "").slice(0, 180));
+    }
+  }
+  const url = opts.fallbackUrl || "";
+  if (url && !url.includes("whatsapp.net") && !url.includes("mmg.")) return url;
+  return null;
+}
 
 function takeAssumirCommand(text: string | null) {
   if (!text) return { assumed: false, cleaned: text };
@@ -481,10 +584,10 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     body = message.conversation;
   } else if (message.extendedTextMessage && typeof message.extendedTextMessage === "object") {
     body = String((message.extendedTextMessage as { text?: string }).text ?? "");
-  } else if (message.imageMessage) {
-    type = "image";
-    const img = message.imageMessage as { caption?: string; url?: string };
-    body = img.caption ?? "[imagem]";
+  } else if (message.imageMessage || message.stickerMessage) {
+    type = message.stickerMessage ? "sticker" : "image";
+    const img = (message.imageMessage || message.stickerMessage) as { caption?: string; url?: string };
+    body = img.caption ?? (type === "sticker" ? "[figurinha]" : "[imagem]");
     mediaUrl = img.url ?? null;
   } else if (message.audioMessage) {
     type = "audio";
@@ -501,6 +604,19 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
 
   const existingContact = await prisma.whatsAppContact.findUnique({ where: { phone } });
   const isNew = !existingContact;
+
+  const quote = extractQuote(message, data);
+  if (["image", "sticker", "video"].includes(type)) {
+    mediaUrl = await resolveMediaFile({
+      type,
+      remoteJid,
+      fromMe,
+      externalId,
+      message,
+      data,
+      fallbackUrl: mediaUrl,
+    });
+  }
 
   const assumir = fromMe ? takeAssumirCommand(body) : { assumed: false, cleaned: body };
   if (assumir.assumed) body = assumir.cleaned;
@@ -572,6 +688,8 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
         type,
         body,
         mediaUrl,
+        quotedExternalId: quote.stanzaId,
+        quotedBody: quote.preview,
       },
     });
 
@@ -678,6 +796,8 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
       type,
       body,
       mediaUrl,
+      quotedExternalId: quote.stanzaId,
+      quotedBody: quote.preview,
     },
   });
 }

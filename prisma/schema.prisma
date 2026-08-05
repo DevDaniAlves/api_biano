@@ -226,17 +226,19 @@ model WhatsAppContact {
 }
 
 model WhatsAppMessage {
-  id         String           @id @default(cuid())
-  contactId  String
-  contact    WhatsAppContact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  externalId String?
-  direction  MessageDirection
-  type       String           @default("text")
-  body       String?
-  mediaUrl   String?
-  sentById   String?
-  sentBy     User?            @relation(fields: [sentById], references: [id], onDelete: SetNull)
-  createdAt  DateTime         @default(now())
+  id               String           @id @default(cuid())
+  contactId        String
+  contact          WhatsAppContact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  externalId       String?
+  direction        MessageDirection
+  type             String           @default("text")
+  body             String?
+  mediaUrl         String?
+  quotedExternalId String?
+  quotedBody       String?
+  sentById         String?
+  sentBy           User?            @relation(fields: [sentById], references: [id], onDelete: SetNull)
+  createdAt        DateTime         @default(now())
 
   @@unique([contactId, externalId])
   @@index([contactId, createdAt])
@@ -255,11 +257,12 @@ model WhatsAppFlow {
 
 /** Instância Evolution conectada via UI (singleton). */
 model WhatsAppConnection {
-  id            String   @id @default("default")
-  instanceName  String   @default("")
-  status        String   @default("disconnected")
-  lastQr        String?
-  updatedAt     DateTime @updatedAt
+  id              String   @id @default("default")
+  instanceName    String   @default("")
+  status          String   @default("disconnected")
+  lastQr          String?
+  lastPairingCode String?
+  updatedAt       DateTime @updatedAt
 }
 
 model Product {

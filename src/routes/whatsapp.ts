@@ -16,7 +16,7 @@ import {
   recordWebhookHit,
   webhookStatusPayload,
 } from "../services/whatsapp/webhook-hits.js";
-import { evolution } from "../services/whatsapp/evolution.js";
+import { evolution, EvolutionClient } from "../services/whatsapp/evolution.js";
 import {
   deletePushSubscription,
   getVapidPublicKey,
@@ -253,7 +253,7 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
       res.status(400).json({ error: "contactId e file obrigatórios" });
       return;
     }
-    const publicUrl = `${env.API_PUBLIC_URL}/uploads/${req.file.filename}`;
+    const publicUrl = `/uploads/${req.file.filename}`;
     const msg = await sendImageMessage({
       contactId,
       userId: req.user!.id,
@@ -383,33 +383,55 @@ whatsappRouter.get("/connection", async (req, res) => {
     });
     let live: unknown = null;
     if (evolution.credentialsOk && row.instanceName) {
-      const st = await evolution.connectionState(row.instanceName);
-      live = st.data;
-      if (st.ok) {
-        const state =
-          (st.data as { instance?: { state?: string } })?.instance?.state ??
-          (st.data as { state?: string })?.state ??
-          row.status;
-        await prisma.whatsAppConnection.update({
-          where: { id: "default" },
-          data: { status: String(state) },
-        });
-        row.status = String(state);
-      } else {
-        const hint = `${st.status} ${st.text}`.toLowerCase();
+      const [st, listed] = await Promise.all([
+        evolution.connectionState(row.instanceName),
+        evolution.fetchInstances(),
+      ]);
+      const instances = EvolutionClient.parseInstanceList(listed.data);
+      const mine = instances.find((i) => {
+        const name = String(i.name ?? i.instanceName ?? "");
+        return name.toLowerCase() === row.instanceName.toLowerCase();
+      });
+      live = { connectionState: st.data, instance: mine ?? null };
+
+      const fromList = mine
+        ? String(mine.connectionStatus ?? mine.state ?? mine.status ?? "")
+        : "";
+      const fromState = st.ok ? EvolutionClient.extractLiveState(st.data) : "";
+      const state = (fromList || fromState || row.status).toLowerCase();
+
+      if (!mine && !st.ok) {
+        const hint = `${st.status} ${st.text} ${listed.status} ${listed.text}`.toLowerCase();
         if (st.status === 404 || hint.includes("not found") || hint.includes("does not exist")) {
           await prisma.whatsAppConnection.update({
             where: { id: "default" },
-            data: { status: "disconnected", lastQr: null },
+            data: { status: "disconnected", lastQr: null, lastPairingCode: null },
           });
           row.status = "disconnected";
           row.lastQr = null;
+          row.lastPairingCode = null;
         }
+      } else if (state) {
+        await prisma.whatsAppConnection.update({
+          where: { id: "default" },
+          data: { status: state },
+        });
+        row.status = state;
       }
     }
+    if ((row.status === "open" || row.status === "connected") && row.lastPairingCode) {
+      await prisma.whatsAppConnection.update({
+        where: { id: "default" },
+        data: { lastPairingCode: null, lastQr: null },
+      });
+      row.lastPairingCode = null;
+      row.lastQr = null;
+    }
+
     res.json({
       ...row,
       credentialsOk: evolution.credentialsOk,
+      defaultPhone: env.WHATSAPP_BUSINESS_PHONE ?? "",
       live,
     });
   } catch (err) {
@@ -432,8 +454,13 @@ whatsappRouter.post("/connection", async (req, res) => {
       res.status(400).json({ error: "Informe o nome da instância em Conectar WhatsApp" });
       return;
     }
+    const number = String(req.body?.number ?? req.body?.phone ?? "").replace(/\D/g, "");
+    if (number && number.length < 10) {
+      res.status(400).json({ error: "Informe o telefone com DDI e DDD (ex: 556634016000)" });
+      return;
+    }
 
-    const created = await evolution.createInstance(instanceName);
+    const created = await evolution.createInstance(instanceName, number || undefined);
     if (!created.ok) {
       const hint = `${created.status} ${created.text}`.toLowerCase();
       const exists =
@@ -449,18 +476,42 @@ whatsappRouter.post("/connection", async (req, res) => {
         return;
       }
     }
-    const connect = await evolution.connectInstance(instanceName);
-    const data = connect.data as {
-      base64?: string;
-      qrcode?: { base64?: string };
-      pairingCode?: string;
-    };
-    const qr =
-      data?.base64 ??
-      data?.qrcode?.base64 ??
-      (typeof (connect.data as { qrcode?: string })?.qrcode === "string"
-        ? (connect.data as { qrcode: string }).qrcode
-        : null);
+
+    if (number) {
+      const listed = await evolution.fetchInstances();
+      const mine = EvolutionClient.parseInstanceList(listed.data).find((i) => {
+        const name = String(i.name ?? i.instanceName ?? "");
+        return name.toLowerCase() === instanceName.toLowerCase();
+      });
+      const liveStatus = String(mine?.connectionStatus ?? mine?.state ?? "").toLowerCase();
+      if (liveStatus === "open" || liveStatus === "connected") {
+        res.status(400).json({ error: "Instância já está conectada. Desconecte antes de gerar um código novo." });
+        return;
+      }
+      if (liveStatus === "connecting") {
+        await evolution.logoutInstance(instanceName).catch(() => {});
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+
+    let connect = await evolution.connectInstance(instanceName, number || undefined);
+    let pairingCode = number ? EvolutionClient.extractPairingCode(connect.data) : null;
+    if (number && !pairingCode) {
+      for (let i = 0; i < 3 && !pairingCode; i++) {
+        await new Promise((r) => setTimeout(r, 1200));
+        connect = await evolution.connectInstance(instanceName, number);
+        pairingCode = EvolutionClient.extractPairingCode(connect.data);
+      }
+    }
+    if (number && !pairingCode) {
+      res.status(400).json({
+        error:
+          "A Evolution não devolveu o código. Desconecte, espere uns segundos e tente de novo. Número só com DDI+DDD.",
+      });
+      return;
+    }
+
+    const qr = number ? null : EvolutionClient.extractQrBase64(connect.data);
 
     const row = await prisma.whatsAppConnection.upsert({
       where: { id: "default" },
@@ -468,15 +519,17 @@ whatsappRouter.post("/connection", async (req, res) => {
         instanceName,
         status: "connecting",
         lastQr: qr,
+        lastPairingCode: pairingCode,
       },
       create: {
         id: "default",
         instanceName,
         status: "connecting",
         lastQr: qr,
+        lastPairingCode: pairingCode,
       },
     });
-    res.json({ ...row, connect: connect.data });
+    res.json({ ...row, pairingCode, connect: connect.data });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -494,7 +547,7 @@ whatsappRouter.delete("/connection", async (req, res) => {
     }
     await prisma.whatsAppConnection.update({
       where: { id: "default" },
-      data: { status: "disconnected", lastQr: null },
+      data: { status: "disconnected", lastQr: null, lastPairingCode: null },
     });
     res.json({ ok: true });
   } catch (err) {
