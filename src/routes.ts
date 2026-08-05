@@ -6,6 +6,8 @@ import { dispatchPending, resetDispatchStatus } from "./services/boletos.js";
 import { todayYmd } from "./services/csv.js";
 import {
   getGestorAutomation,
+  resetGestorAutomationRun,
+  runGestorAutomationNow,
   updateGestorAutomation,
 } from "./services/gestor-automation.js";
 import { importCsvBuffer, runScrapeJob } from "./services/jobs.js";
@@ -197,6 +199,25 @@ router.patch("/gestor/automation", ...adminOnly, async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const code = message.includes("inválido") || message.includes("Selecione") ? 400 : 500;
+    res.status(code).json({ error: message });
+  }
+});
+
+router.post("/gestor/automation/reset-run", ...adminOnly, async (_req, res) => {
+  try {
+    res.json(await resetGestorAutomationRun());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post("/gestor/automation/run-now", ...adminOnly, async (_req, res) => {
+  try {
+    const result = await runGestorAutomationNow();
+    res.json({ ok: true, ...result, automation: await getGestorAutomation() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = message.includes("em andamento") ? 409 : 500;
     res.status(code).json({ error: message });
   }
 });

@@ -92,7 +92,104 @@ export async function updateGestorAutomation(input: {
   };
 }
 
+export async function resetGestorAutomationRun() {
+  await ensureGestorAutomation();
+  const row = await prisma.gestorAutomation.update({
+    where: { id: "default" },
+    data: {
+      lastRunAt: null,
+      lastRunYmd: null,
+      lastRunStatus: null,
+      lastRunMessage: null,
+    },
+  });
+  return {
+    ...row,
+    weekdays: asWeekdays(row.weekdays),
+    timezone: "America/Sao_Paulo",
+  };
+}
+
 let tickRunning = false;
+
+async function executeAutomationOnce() {
+  const cfg = await ensureGestorAutomation();
+  const ymd = todayYmd();
+
+  await prisma.gestorAutomation.update({
+    where: { id: "default" },
+    data: {
+      lastRunAt: new Date(),
+      lastRunYmd: ymd,
+      lastRunStatus: "running",
+      lastRunMessage: "Coletando (Playwright)…",
+    },
+  });
+
+  const job = await runScrapeJobAndWait();
+  if (job.status !== "success") {
+    await prisma.gestorAutomation.update({
+      where: { id: "default" },
+      data: {
+        lastRunStatus: "failed",
+        lastRunYmd: null,
+        lastRunMessage: `Scrape falhou: ${job.message ?? job.status}`,
+      },
+    });
+    return { ok: false as const, message: job.message ?? job.status };
+  }
+
+  let msg = `Scrape OK: ${job.rowsUpserted} boleto(s)`;
+  if (cfg.dispatchAfterScrape) {
+    const d = await dispatchPending(ymd);
+    msg += ` · Disparo: ${d.sent} enviados, ${d.failed} falhas, ${d.skipped} ignorados`;
+  }
+
+  await prisma.gestorAutomation.update({
+    where: { id: "default" },
+    data: {
+      lastRunStatus: "success",
+      lastRunMessage: msg,
+    },
+  });
+  console.log(`[gestor-auto] ${ymd} ${cfg.runTimeHHMM} — ${msg}`);
+  return { ok: true as const, message: msg };
+}
+
+/** Dispara agora (teste), ignorando horário e trava do dia. */
+export async function runGestorAutomationNow() {
+  if (tickRunning) throw new Error("Já existe uma execução automática em andamento");
+  tickRunning = true;
+  const ymd = todayYmd();
+  await prisma.gestorAutomation.update({
+    where: { id: "default" },
+    data: {
+      lastRunAt: new Date(),
+      lastRunYmd: ymd,
+      lastRunStatus: "running",
+      lastRunMessage: "Coletando (Playwright)…",
+    },
+  });
+  void (async () => {
+    try {
+      await executeAutomationOnce();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await prisma.gestorAutomation.update({
+        where: { id: "default" },
+        data: {
+          lastRunStatus: "failed",
+          lastRunYmd: null,
+          lastRunMessage: message.slice(0, 1000),
+        },
+      });
+      console.error("[gestor-auto]", message);
+    } finally {
+      tickRunning = false;
+    }
+  })();
+  return { started: true, message: "Execução iniciada" };
+}
 
 /** Chamado a cada ~30s: se automático ativo e horário SP bate, scrape (+ disparo). */
 export async function tickGestorAutomation() {
@@ -129,43 +226,7 @@ export async function tickGestorAutomation() {
 
   tickRunning = true;
   try {
-    await prisma.gestorAutomation.update({
-      where: { id: "default" },
-      data: {
-        lastRunAt: new Date(),
-        lastRunYmd: ymd,
-        lastRunStatus: "running",
-        lastRunMessage: "Coletando (Playwright)…",
-      },
-    });
-
-    const job = await runScrapeJobAndWait();
-    if (job.status !== "success") {
-      await prisma.gestorAutomation.update({
-        where: { id: "default" },
-        data: {
-          lastRunStatus: "failed",
-          lastRunYmd: null,
-          lastRunMessage: `Scrape falhou: ${job.message ?? job.status}`,
-        },
-      });
-      return;
-    }
-
-    let msg = `Scrape OK: ${job.rowsUpserted} boleto(s)`;
-    if (cfg.dispatchAfterScrape) {
-      const d = await dispatchPending(ymd);
-      msg += ` · Disparo: ${d.sent} enviados, ${d.failed} falhas, ${d.skipped} ignorados`;
-    }
-
-    await prisma.gestorAutomation.update({
-      where: { id: "default" },
-      data: {
-        lastRunStatus: "success",
-        lastRunMessage: msg,
-      },
-    });
-    console.log(`[gestor-auto] ${ymd} ${cfg.runTimeHHMM} — ${msg}`);
+    await executeAutomationOnce();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await prisma.gestorAutomation.update({
