@@ -29,7 +29,7 @@ const schema = z.object({
   MESSAGE_TEMPLATE: z
     .string()
     .default(
-      "Olá {{nome}}, sua parcela no valor de R$ {{valor}} vence em {{vencimento}}.\n\nAcesse com CPF e data de nascimento:\n{{link}}"
+      "Olá {{nome}}, tudo bem?\n\nPassando para lembrar que sua parcela de *R$ {{valor}}* vence em *{{vencimento}}*.\n\nPara consultar e pagar, acesse com CPF e data de nascimento:\n{{link}}\n\nCaso já tenha efetuado o pagamento, por favor desconsidere esta mensagem.\n\nCalangus Moda Jovem"
     ),
   CREDIARIO_CLIENTE_LINK: z
     .string()

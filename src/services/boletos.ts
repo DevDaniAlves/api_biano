@@ -64,6 +64,12 @@ export async function upsertBoletosFromCsv(
   return { upserted };
 }
 
+function firstName(full: string): string {
+  const part = full.trim().split(/\s+/).find(Boolean) ?? full.trim();
+  if (!part) return full.trim();
+  return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+}
+
 export function renderMessage(boleto: Boleto, template = env.MESSAGE_TEMPLATE): string {
   const valorFmt = boleto.valorVencimento.toLocaleString("pt-BR", {
     minimumFractionDigits: 2,
@@ -73,7 +79,7 @@ export function renderMessage(boleto: Boleto, template = env.MESSAGE_TEMPLATE): 
 
   return template
     .replaceAll("\\n", "\n")
-    .replaceAll("{{nome}}", boleto.clienteNome)
+    .replaceAll("{{nome}}", firstName(boleto.clienteNome))
     .replaceAll("{{valor}}", valorFmt)
     .replaceAll("{{vencimento}}", venc)
     .replaceAll("{{parcela}}", boleto.parcela)
