@@ -677,11 +677,45 @@ whatsappRouter.delete("/agents/:id", async (req, res) => {
 
 whatsappRouter.get("/users", async (_req, res) => {
   const users = await prisma.user.findMany({
-    where: { active: true },
-    select: { id: true, name: true, email: true, role: true },
-    orderBy: { name: "asc" },
+    select: { id: true, name: true, email: true, role: true, active: true },
+    orderBy: [{ active: "desc" }, { name: "asc" }],
   });
   res.json(users);
+});
+
+whatsappRouter.patch("/users/:id", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin altera usuários" });
+      return;
+    }
+    if (req.params.id === req.user.id && req.body?.active === false) {
+      res.status(400).json({ error: "Você não pode desativar a si mesmo" });
+      return;
+    }
+    const data: { active?: boolean; name?: string } = {};
+    if (typeof req.body?.active === "boolean") data.active = req.body.active;
+    if (typeof req.body?.name === "string") {
+      const name = req.body.name.trim();
+      if (!name) {
+        res.status(400).json({ error: "Nome obrigatório" });
+        return;
+      }
+      data.name = name;
+    }
+    if (!Object.keys(data).length) {
+      res.status(400).json({ error: "Nada para atualizar" });
+      return;
+    }
+    const user = await prisma.user.update({
+      where: { id: req.params.id },
+      data,
+      select: { id: true, name: true, email: true, role: true, active: true },
+    });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 whatsappRouter.post("/users", async (req, res) => {

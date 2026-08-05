@@ -55,18 +55,33 @@ export function buildMenuText(welcome: string, options: FlowOption[]): string {
   return `${welcome}\n\n${lines.join("\n")}`;
 }
 
-async function optionsWithNames(options: FlowOption[]): Promise<FlowOption[]> {
-  const ids = [...new Set(options.map((o) => o.userId).filter(Boolean))] as string[];
-  if (!ids.length) return options;
-  const users = await prisma.user.findMany({
-    where: { id: { in: ids } },
+/** Menu ao vivo: nomes dos vendedores ativos + opção de fila. */
+async function resolveMenuOptions(): Promise<FlowOption[]> {
+  const flow = await getFlow();
+  const stored = asOptions(flow.options);
+  const queueFromFlow = stored.find((o) => o.action === "queue");
+
+  const sellers = await prisma.user.findMany({
+    where: { active: true, role: "seller" },
+    orderBy: { createdAt: "asc" },
     select: { id: true, name: true },
   });
-  const nameById = new Map(users.map((u) => [u.id, u.name.trim()]));
-  return options.map((o) => {
-    const name = o.userId ? nameById.get(o.userId) : "";
-    return name ? { ...o, label: name } : o;
+
+  const options: FlowOption[] = sellers.map((s, i) => ({
+    key: String(i + 1),
+    label: s.name.trim() || `Atendente ${i + 1}`,
+    action: "agent",
+    userId: s.id,
+  }));
+
+  options.push({
+    key: String(options.length + 1),
+    label: queueFromFlow?.label?.trim() || "Não tenho preferência",
+    action: "queue",
+    queueId: queueFromFlow?.queueId ?? null,
   });
+
+  return options;
 }
 
 async function botSend(
@@ -178,9 +193,7 @@ export async function sendSellersMenu(contactId: string) {
     where: { id: contactId },
   });
   const flow = await getFlow();
-  const options = await optionsWithNames(
-    asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS
-  );
+  const options = await resolveMenuOptions();
   const text = buildMenuText(flow.welcomeMessage, options);
   const externalId = await botSend(contact, text);
   await persistBotOut(
@@ -409,9 +422,7 @@ async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
 
 export async function handleMenuChoice(contactId: string, raw: string) {
   const flow = await getFlow();
-  const options = await optionsWithNames(
-    asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS
-  );
+  const options = await resolveMenuOptions();
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 2);
   const choice = options.find((o) => o.key === key);
   if (!choice) {
@@ -434,7 +445,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     if (!userId) {
       await botSend(
         contact,
-        "Este atendente ainda não está configurado. Digite 4 para fila sem preferência, ou fale com o administrador."
+        "Este atendente ainda não está configurado. Escolha outra opção ou fale com o administrador."
       );
       return;
     }

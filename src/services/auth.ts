@@ -90,7 +90,7 @@ export async function createUser(data: {
   const passwordHash = await bcrypt.hash(data.password, 10);
   return prisma.user.create({
     data: {
-      name: data.name,
+      name: data.name.trim(),
       email: data.email.toLowerCase(),
       passwordHash,
       role: data.role ?? "seller",
