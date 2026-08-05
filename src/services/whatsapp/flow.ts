@@ -612,7 +612,7 @@ export async function expireStaleRatings() {
   return stale.length;
 }
 
-/** Clicar na conversa = assumir (se waiting e ofertado a ele ou openToAll). */
+/** Clicar na conversa = assumir (vendedor). Admin só supervisiona, não assume. */
 export async function assumeOnOpen(
   contactId: string,
   userId: string,
@@ -621,6 +621,8 @@ export async function assumeOnOpen(
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
+
+  if (role === "admin") return contact;
 
   // Histórico finalizado / aguardando avaliação: só leitura
   if (contact.status === "closed" || contact.status === "awaiting_rating") {
@@ -642,15 +644,13 @@ export async function assumeOnOpen(
   if (
     contact.status === "human" &&
     contact.assignedToId &&
-    contact.assignedToId !== userId &&
-    role !== "admin"
+    contact.assignedToId !== userId
   ) {
     throw new Error("Conversa já assumida por outro atendente");
   }
 
-  if (contact.status === "waiting" || (contact.status === "human" && role === "admin")) {
+  if (contact.status === "waiting") {
     const canTake =
-      role === "admin" ||
       contact.openToAll ||
       contact.offeredToId === userId ||
       (!contact.offeredToId && !contact.openToAll);
@@ -726,7 +726,13 @@ export async function listContactsForUser(opts: {
 
   const statusFilter =
     opts.status === "active"
-      ? { status: { in: ["waiting", "human"] as ContactStatusFilter[] } }
+      ? {
+          status: {
+            in: (opts.role === "admin"
+              ? ["bot", "waiting", "human"]
+              : ["waiting", "human"]) as ContactStatusFilter[],
+          },
+        }
       : opts.status
         ? { status: opts.status as ContactStatusFilter }
         : {};

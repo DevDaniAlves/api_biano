@@ -171,10 +171,11 @@ export async function sendTextMessage(opts: {
     throw new Error("Conversa finalizada — somente leitura");
   }
 
+  const role = opts.role ?? "seller";
   const alreadyMine =
     contact.status === "human" && contact.assignedToId === opts.userId;
-  if (!alreadyMine) {
-    await assumeOnOpen(opts.contactId, opts.userId, opts.role ?? "seller");
+  if (!alreadyMine && role !== "admin") {
+    await assumeOnOpen(opts.contactId, opts.userId, role);
   }
 
   if (!evolution.enabled) throw new Error("Evolution não configurada");
@@ -196,8 +197,7 @@ export async function sendTextMessage(opts: {
     data: {
       lastMessageAt: new Date(),
       lastMessagePreview: text.slice(0, 120),
-      status: "human",
-      assignedToId: opts.userId,
+      ...(role === "admin" ? {} : { status: "human" as const, assignedToId: opts.userId }),
     },
   });
 
@@ -220,10 +220,11 @@ export async function sendImageMessage(opts: {
   if (contact.status === "closed" || contact.status === "awaiting_rating") {
     throw new Error("Conversa finalizada — somente leitura");
   }
+  const role = opts.role ?? "seller";
   const alreadyMine =
     contact.status === "human" && contact.assignedToId === opts.userId;
-  if (!alreadyMine) {
-    await assumeOnOpen(opts.contactId, opts.userId, opts.role ?? "seller");
+  if (!alreadyMine && role !== "admin") {
+    await assumeOnOpen(opts.contactId, opts.userId, role);
   }
   if (!evolution.enabled) throw new Error("Evolution não configurada");
 
@@ -258,8 +259,7 @@ export async function sendImageMessage(opts: {
     data: {
       lastMessageAt: new Date(),
       lastMessagePreview: caption.slice(0, 120),
-      status: "human",
-      assignedToId: opts.userId,
+      ...(role === "admin" ? {} : { status: "human" as const, assignedToId: opts.userId }),
     },
   });
 
