@@ -26,22 +26,35 @@ const RATING_MSG =
 const INACTIVITY_MSG =
   "Olá! Ainda está por aí? Caso precise de mais alguma informação, estamos à disposição.";
 
-function mimeExt(mimetype?: string | null, type?: string) {
+function mimeExt(mimetype?: string | null, type?: string, fileName?: string | null) {
+  const fromName = fileName?.split(".").pop()?.toLowerCase();
+  if (fromName && /^[a-z0-9]{2,5}$/.test(fromName)) return fromName;
   const m = (mimetype || "").toLowerCase();
   if (m.includes("png")) return "png";
   if (m.includes("webp")) return "webp";
   if (m.includes("gif")) return "gif";
+  if (m.includes("pdf")) return "pdf";
+  if (m.includes("msword") || m.includes("wordprocessingml")) return "docx";
+  if (m.includes("spreadsheet") || m.includes("excel")) return "xlsx";
   if (m.includes("mp4") || type === "video") return "mp4";
+  if (m.includes("mpeg") && type === "audio") return "mp3";
   if (m.includes("ogg") || m.includes("opus") || type === "audio") return "ogg";
+  if (type === "document") return "bin";
+  if (type === "audio") return "ogg";
   return "jpg";
 }
 
-function saveBase64Media(b64: string, mimetype?: string | null, type?: string) {
+function saveBase64Media(
+  b64: string,
+  mimetype?: string | null,
+  type?: string,
+  fileName?: string | null
+) {
   const raw = b64.replace(/^data:[^;]+;base64,/, "");
   const buf = Buffer.from(raw, "base64");
   if (buf.length < 40) return null;
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${mimeExt(mimetype, type)}`;
+  const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${mimeExt(mimetype, type, fileName)}`;
   fs.writeFileSync(path.join(UPLOADS_DIR, name), buf);
   return `/uploads/${name}`;
 }
@@ -98,14 +111,15 @@ async function resolveMediaFile(opts: {
   message: Record<string, unknown>;
   data: Record<string, unknown>;
   fallbackUrl?: string | null;
+  fileName?: string | null;
 }) {
-  if (!["image", "video", "sticker"].includes(opts.type)) return null;
+  if (!["image", "video", "sticker", "audio", "document"].includes(opts.type)) return null;
   const inline =
     (typeof opts.data.base64 === "string" && opts.data.base64) ||
     (typeof opts.message.base64 === "string" && opts.message.base64) ||
     "";
   if (inline.length > 80) {
-    const saved = saveBase64Media(inline, null, opts.type);
+    const saved = saveBase64Media(inline, null, opts.type, opts.fileName);
     if (saved) return saved;
   }
   if (opts.externalId && evolution.enabled) {
@@ -117,7 +131,7 @@ async function resolveMediaFile(opts: {
     });
     const extracted = EvolutionClient.extractMediaBase64(r.data);
     if (extracted) {
-      const saved = saveBase64Media(extracted.base64, extracted.mimetype, opts.type);
+      const saved = saveBase64Media(extracted.base64, extracted.mimetype, opts.type, opts.fileName);
       if (saved) return saved;
     } else if (!r.ok) {
       console.warn("[media] getBase64 falhou", r.status, (r.text || "").slice(0, 180));
@@ -579,6 +593,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   let type = "text";
   let body: string | null = null;
   let mediaUrl: string | null = null;
+  let mediaFileName: string | null = null;
 
   if (typeof message.conversation === "string") {
     body = message.conversation;
@@ -589,15 +604,30 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     const img = (message.imageMessage || message.stickerMessage) as { caption?: string; url?: string };
     body = img.caption ?? (type === "sticker" ? "[figurinha]" : "[imagem]");
     mediaUrl = img.url ?? null;
-  } else if (message.audioMessage) {
+  } else if (message.audioMessage || message.pttMessage) {
     type = "audio";
     body = "[áudio]";
+    const aud = (message.audioMessage || message.pttMessage) as { url?: string };
+    mediaUrl = aud.url ?? null;
   } else if (message.videoMessage) {
     type = "video";
-    body = "[vídeo]";
-  } else if (message.documentMessage) {
+    const vid = message.videoMessage as { caption?: string; url?: string };
+    body = vid.caption ?? "[vídeo]";
+    mediaUrl = vid.url ?? null;
+  } else if (message.documentMessage || message.documentWithCaptionMessage) {
     type = "document";
-    body = String((message.documentMessage as { fileName?: string }).fileName ?? "[documento]");
+    const wrapped = message.documentWithCaptionMessage as
+      | { message?: { documentMessage?: Record<string, unknown> } }
+      | undefined;
+    const doc = (message.documentMessage || wrapped?.message?.documentMessage || {}) as {
+      fileName?: string;
+      caption?: string;
+      url?: string;
+      mimetype?: string;
+    };
+    body = doc.caption || doc.fileName || "[documento]";
+    mediaUrl = doc.url ?? null;
+    mediaFileName = doc.fileName ?? null;
   } else {
     body = "[mensagem]";
   }
@@ -606,7 +636,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   const isNew = !existingContact;
 
   const quote = extractQuote(message, data);
-  if (["image", "sticker", "video"].includes(type)) {
+  if (["image", "sticker", "video", "audio", "document"].includes(type)) {
     mediaUrl = await resolveMediaFile({
       type,
       remoteJid,
@@ -615,6 +645,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
       message,
       data,
       fallbackUrl: mediaUrl,
+      fileName: mediaFileName,
     });
   }
 
