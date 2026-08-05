@@ -183,6 +183,22 @@ export class EvolutionClient {
   async deleteInstance(instanceName: string) {
     return this.req("DELETE", `/instance/delete/${encodeURIComponent(instanceName)}`);
   }
+
+  async deleteOwnMessage(remoteJid: string, messageId: string) {
+    const instance = await this.resolveInstance();
+    if (!instance) {
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
+    }
+    const r = await this.req("DELETE", `/chat/deleteMessageForEveryone/${encodeURIComponent(instance)}`, {
+      id: messageId,
+      remoteJid,
+      fromMe: true,
+    });
+    if (!r.ok) {
+      console.warn("[evolution] deleteMessage", instance, r.status, r.text.slice(0, 200));
+    }
+    return r;
+  }
 }
 
 export const evolution = new EvolutionClient();

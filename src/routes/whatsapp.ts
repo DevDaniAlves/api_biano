@@ -9,6 +9,7 @@ import {
   ensureFlow,
   getFlow,
   restartToBot,
+  setWebhookPaused,
   type FlowOption,
 } from "../services/whatsapp/flow.js";
 import {
@@ -94,11 +95,15 @@ whatsappRouter.post("/webhook/evolution", async (req, res) => {
       from: key.remoteJid ? String(key.remoteJid) : null,
       preview,
     });
-    await handleEvolutionWebhook(body);
+    try {
+      await handleEvolutionWebhook(body);
+    } catch (err) {
+      console.error("[webhook]", err);
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error("[webhook]", err);
-    res.status(500).json({ error: "webhook error" });
+    res.json({ ok: true });
   }
 });
 
@@ -298,6 +303,23 @@ whatsappRouter.post("/contacts/restart-bot", async (req, res) => {
       return;
     }
     res.json(await restartToBot(contactId));
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/contacts/webhook-pause", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin pode pausar o webhook" });
+      return;
+    }
+    const contactId = String(req.body?.contactId ?? "");
+    if (!contactId) {
+      res.status(400).json({ error: "contactId obrigatório" });
+      return;
+    }
+    res.json(await setWebhookPaused(contactId, Boolean(req.body?.paused)));
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

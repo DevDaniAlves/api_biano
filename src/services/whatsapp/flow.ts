@@ -84,21 +84,72 @@ async function resolveMenuOptions(): Promise<FlowOption[]> {
   return options;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function botDelayMs() {
+  return 2000 + Math.floor(Math.random() * 5001);
+}
+
+function isTransientEvolutionError(status: number, text: string) {
+  const t = (text || "").toLowerCase();
+  return (
+    status === 502 ||
+    status === 503 ||
+    t.includes("connection closed") ||
+    t.includes("\"1006\"") ||
+    t.includes("timed out") ||
+    t.includes("econnreset")
+  );
+}
+
 async function botSend(
-  contact: { phone: string; remoteJid?: string | null },
+  contact: { id?: string; phone: string; remoteJid?: string | null; webhookPaused?: boolean },
   text: string
 ): Promise<string | null> {
+  if (contact.webhookPaused) {
+    console.warn("[bot] webhook pausado, skip send:", contact.phone);
+    return null;
+  }
   if (!evolution.enabled) {
     console.warn("[bot] Evolution off, skip send:", text.slice(0, 80));
     return null;
   }
-  const r = await evolution.sendText(contact.remoteJid || contact.phone, text);
+
+  const wait = botDelayMs();
+  console.log("[bot] delay", wait, "ms", contact.phone);
+  await sleep(wait);
+
+  if (contact.id) {
+    const fresh = await prisma.whatsAppContact.findUnique({ where: { id: contact.id } });
+    if (fresh?.webhookPaused) {
+      console.warn("[bot] pausado durante delay, skip:", contact.phone);
+      return null;
+    }
+  }
+
+  let r = await evolution.sendText(contact.remoteJid || contact.phone, text);
+  if (!r.ok && isTransientEvolutionError(r.status, r.text)) {
+    await sleep(1500);
+    r = await evolution.sendText(contact.remoteJid || contact.phone, text);
+  }
   if (!r.ok) {
     console.error("[bot] falha ao enviar WhatsApp", r.status, (r.text || "").slice(0, 300));
-    throw new Error(`Falha ao enviar WhatsApp (${r.status})`);
+    return null;
   }
   console.log("[bot] enviado:", text.replace(/\s+/g, " ").slice(0, 80));
   return EvolutionClient.extractMessageId(r.data);
+}
+
+async function persistIfSent(
+  contactId: string,
+  text: string,
+  extra: Prisma.WhatsAppContactUpdateInput | undefined,
+  externalId: string | null
+) {
+  if (!externalId && evolution.enabled) return;
+  await persistBotOut(contactId, text, extra, externalId);
 }
 
 async function persistBotOut(
@@ -170,6 +221,32 @@ async function persistBotOut(
   });
 }
 
+/** Admin: tira/coloca o cliente no atendimento manual (sem bot). */
+export async function setWebhookPaused(contactId: string, paused: boolean) {
+  await prisma.whatsAppContact.update({
+    where: { id: contactId },
+    data: {
+      webhookPaused: paused,
+      ...(paused
+        ? {
+            offeredToId: null,
+            offeredAt: null,
+            openToAll: false,
+            openedToAllAt: null,
+          }
+        : {}),
+    },
+  });
+  return prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+    include: {
+      assignedTo: { select: { id: true, name: true } },
+      offeredTo: { select: { id: true, name: true } },
+      queue: { select: { id: true, name: true } },
+    },
+  });
+}
+
 /** Admin: devolve o cliente ao menu do bot. */
 export async function restartToBot(contactId: string) {
   await prisma.whatsAppContact.update({
@@ -177,6 +254,7 @@ export async function restartToBot(contactId: string) {
     data: {
       status: "bot",
       botMenuStep: "department",
+      webhookPaused: false,
       assignedToId: null,
       assignedAt: null,
       assumeWaitSeconds: null,
@@ -209,7 +287,7 @@ export async function sendDepartmentMenu(contactId: string) {
     where: { id: contactId },
   });
   const externalId = await botSend(contact, DEPT_MENU);
-  await persistBotOut(
+  await persistIfSent(
     contactId,
     DEPT_MENU,
     {
@@ -229,7 +307,7 @@ export async function sendSellersMenu(contactId: string) {
   const options = await resolveMenuOptions();
   const text = buildMenuText(flow.welcomeMessage, options);
   const externalId = await botSend(contact, text);
-  await persistBotOut(
+  await persistIfSent(
     contactId,
     text,
     {
@@ -422,7 +500,7 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     const msg =
       "Certo! Encaminhamos você para o setor Financeiro. Em breve um atendente irá te responder.";
     const externalId = await botSend(contact, msg);
-    await persistBotOut(contactId, msg, undefined, externalId);
+    await persistIfSent(contactId, msg, undefined, externalId);
     return;
   }
 
@@ -486,7 +564,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     const msg =
       "Perfeito! Encaminhamos você para o atendente escolhido. Em breve ele irá te responder.";
     const externalId = await botSend(contact, msg);
-    await persistBotOut(contactId, msg, undefined, externalId);
+    await persistIfSent(contactId, msg, undefined, externalId);
     return;
   }
 
@@ -509,7 +587,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
   });
   const msg = "Certo! Você entrou na fila de atendimento. Em breve um vendedor irá te atender.";
   const externalId = await botSend(contact, msg);
-  await persistBotOut(contactId, msg, undefined, externalId);
+  await persistIfSent(contactId, msg, undefined, externalId);
 }
 
 /** Fora do horário: avisa e deixa na fila aberta para depois. */
@@ -519,7 +597,7 @@ export async function handleOutsideHours(contactId: string) {
     where: { id: contactId },
   });
   const externalId = await botSend(contact, flow.closedMessage);
-  await persistBotOut(contactId, flow.closedMessage, undefined, externalId);
+  await persistIfSent(contactId, flow.closedMessage, undefined, externalId);
   const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
   const now = new Date();
   const updated = await prisma.whatsAppContact.update({
@@ -546,10 +624,12 @@ export async function handleOutsideHours(contactId: string) {
 }
 
 export async function processInboundBot(contactId: string, body: string | null, isNew: boolean) {
+  const existing = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+  });
+  if (existing.webhookPaused) return;
+
   if (!isBusinessHours()) {
-    const existing = await prisma.whatsAppContact.findUniqueOrThrow({
-      where: { id: contactId },
-    });
     if (existing.status === "waiting" && existing.openToAll) {
       return;
     }
@@ -557,9 +637,7 @@ export async function processInboundBot(contactId: string, body: string | null, 
     return;
   }
 
-  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
-    where: { id: contactId },
-  });
+  const contact = existing;
 
   // Catálogo: keyword pula departamento → menu vendedores
   if ((isNew || contact.status === "closed" || contact.status === "bot") && isCatalogKeyword(body)) {
@@ -595,6 +673,7 @@ export async function expireStaleOffers() {
   const stale = await prisma.whatsAppContact.findMany({
     where: {
       status: "waiting",
+      webhookPaused: false,
       openToAll: false,
       offeredToId: { not: null },
       offeredAt: { lt: cutoff },
@@ -630,6 +709,7 @@ export async function expireStaleRatings() {
   const stale = await prisma.whatsAppContact.findMany({
     where: {
       status: "awaiting_rating",
+      webhookPaused: false,
       ratingAskedAt: { lt: cutoff },
       rating: null,
     },
@@ -667,6 +747,14 @@ export async function assumeOnOpen(
   });
 
   if (role === "admin") return contact;
+
+  if (contact.webhookPaused) {
+    await prisma.whatsAppContact.update({
+      where: { id: contactId },
+      data: { unreadCount: 0 },
+    });
+    return contact;
+  }
 
   // Histórico finalizado / aguardando avaliação: só leitura
   if (contact.status === "closed" || contact.status === "awaiting_rating") {
@@ -769,17 +857,20 @@ export async function listContactsForUser(opts: {
     : {};
 
   const statusFilter =
-    opts.status === "active"
-      ? {
-          status: {
-            in: (opts.role === "admin"
-              ? ["bot", "waiting", "human"]
-              : ["waiting", "human"]) as ContactStatusFilter[],
-          },
-        }
-      : opts.status
-        ? { status: opts.status as ContactStatusFilter }
-        : {};
+    opts.status === "manual"
+      ? { webhookPaused: true }
+      : opts.status === "active"
+        ? {
+            webhookPaused: false,
+            status: {
+              in: (opts.role === "admin"
+                ? ["bot", "waiting", "human"]
+                : ["waiting", "human"]) as ContactStatusFilter[],
+            },
+          }
+        : opts.status
+          ? { webhookPaused: false, status: opts.status as ContactStatusFilter }
+          : {};
 
   const include = {
     assignedTo: { select: { id: true, name: true } },

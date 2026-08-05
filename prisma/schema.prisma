@@ -218,6 +218,8 @@ model WhatsAppContact {
   rating               Int?
   ratingAskedAt        DateTime?
   unreadCount          Int               @default(0)
+  /** Atendimento pelo app WhatsApp — bot não responde */
+  webhookPaused        Boolean           @default(false)
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
   messages             WhatsAppMessage[]

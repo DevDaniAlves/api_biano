@@ -10,6 +10,7 @@ import {
   expireStaleRatings,
   listContactsForUser,
   processInboundBot,
+  setWebhookPaused,
 } from "./flow.js";
 import { assumeMetricStart } from "./schedule.js";
 
@@ -23,6 +24,18 @@ const RATING_MSG =
 
 const INACTIVITY_MSG =
   "Olá! Ainda está por aí? Caso precise de mais alguma informação, estamos à disposição.";
+
+function takeAssumirCommand(text: string | null) {
+  if (!text) return { assumed: false, cleaned: text };
+  if (!/#assumir\b/i.test(text)) return { assumed: false, cleaned: text };
+  const cleaned = text
+    .replace(/#assumir\b/gi, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  return { assumed: true, cleaned: cleaned || null };
+}
 
 /** Grava out após envio, reutilizando eco do webhook se já chegou. */
 async function upsertOutboundMessage(opts: {
@@ -325,6 +338,9 @@ export async function resolveContact(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
+  if (contact.webhookPaused) {
+    throw new Error("Cliente em atendimento manual — volte ao webhook antes de finalizar");
+  }
 
   let externalId: string | null = null;
   if (evolution.enabled) {
@@ -358,6 +374,9 @@ export async function warnInactivity(contactId: string, userId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
+  if (contact.webhookPaused) {
+    throw new Error("Cliente em atendimento manual");
+  }
   const flags = contactFlags(contact);
   if (!flags.canWarnInactivity) {
     throw new Error(
@@ -483,6 +502,9 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   const existingContact = await prisma.whatsAppContact.findUnique({ where: { phone } });
   const isNew = !existingContact;
 
+  const assumir = fromMe ? takeAssumirCommand(body) : { assumed: false, cleaned: body };
+  if (assumir.assumed) body = assumir.cleaned;
+
   const contact = await prisma.whatsAppContact.upsert({
     where: { phone },
     create: {
@@ -490,6 +512,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
       remoteJid,
       name: fromMe ? null : pushName,
       status: "bot",
+      webhookPaused: fromMe,
       lastMessageAt: new Date(),
       lastMessagePreview: (body ?? "").slice(0, 120),
       lastClientMessageAt: fromMe ? null : new Date(),
@@ -506,6 +529,15 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     },
   });
 
+  if (assumir.assumed) {
+    await setWebhookPaused(contact.id, true);
+    console.log("[webhook] #assumir → manual", phone);
+    if (!body) {
+      if (externalId) void evolution.deleteOwnMessage(remoteJid, externalId);
+      return;
+    }
+  }
+
   if (externalId) {
     const dup = await prisma.whatsAppMessage.findUnique({
       where: { contactId_externalId: { contactId: contact.id, externalId } },
@@ -513,6 +545,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     if (dup) {
       if (
         !fromMe &&
+        !contact.webhookPaused &&
         (contact.status === "bot" || contact.status === "closed")
       ) {
         const recentOut = await prisma.whatsAppMessage.findFirst({
@@ -545,6 +578,8 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contact.id } });
     const preview = (body ?? "[mensagem]").slice(0, 120);
     const who = fresh.name || fresh.phone;
+
+    if (fresh.webhookPaused) return;
 
     if (fresh.status === "awaiting_rating") {
       await handleRatingReply(contact.id, body);
