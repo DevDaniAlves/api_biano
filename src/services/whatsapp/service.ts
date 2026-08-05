@@ -180,7 +180,7 @@ export async function sendTextMessage(opts: {
   if (!evolution.enabled) throw new Error("Evolution não configurada");
 
   const text = await sellerPrefix(opts.userId, opts.body);
-  const r = await evolution.sendText(contact.phone, text);
+  const r = await evolution.sendText(contact.remoteJid || contact.phone, text);
   if (!r.ok) throw new Error(`Falha Evolution: ${r.status}`);
 
   const externalId = EvolutionClient.extractMessageId(r.data);
@@ -235,7 +235,7 @@ export async function sendImageMessage(opts: {
   const b64 = buf.toString("base64");
 
   const r = await evolution.sendMedia({
-    phone: contact.phone,
+    phone: contact.remoteJid || contact.phone,
     media: b64,
     mimetype: opts.mimetype,
     caption,
@@ -328,7 +328,7 @@ export async function resolveContact(contactId: string) {
 
   let externalId: string | null = null;
   if (evolution.enabled) {
-    const r = await evolution.sendText(contact.phone, RATING_MSG);
+    const r = await evolution.sendText(contact.remoteJid || contact.phone, RATING_MSG);
     externalId = EvolutionClient.extractMessageId(r.data);
   }
 
@@ -367,7 +367,7 @@ export async function warnInactivity(contactId: string, userId: string) {
   if (!evolution.enabled) throw new Error("Evolution não configurada");
 
   const text = await sellerPrefix(userId, INACTIVITY_MSG);
-  const r = await evolution.sendText(contact.phone, text);
+  const r = await evolution.sendText(contact.remoteJid || contact.phone, text);
   if (!r.ok) throw new Error(`Falha Evolution: ${r.status}`);
 
   await upsertOutboundMessage({
@@ -397,7 +397,7 @@ async function handleRatingReply(contactId: string, body: string | null) {
     const hint = "Por favor, responda apenas com um número de *1* a *5*.";
     let externalId: string | null = null;
     if (evolution.enabled) {
-      const r = await evolution.sendText(contact.phone, hint);
+      const r = await evolution.sendText(contact.remoteJid || contact.phone, hint);
       externalId = EvolutionClient.extractMessageId(r.data);
     }
     await upsertOutboundMessage({
@@ -416,7 +416,7 @@ async function handleRatingReply(contactId: string, body: string | null) {
   });
   let externalId: string | null = null;
   if (evolution.enabled) {
-    const r = await evolution.sendText(contact.phone, thanks);
+    const r = await evolution.sendText(contact.remoteJid || contact.phone, thanks);
     externalId = EvolutionClient.extractMessageId(r.data);
   }
   await upsertOutboundMessage({
@@ -443,10 +443,11 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   const data = (payload.data ?? payload) as Record<string, unknown>;
   const key = (data.key ?? {}) as Record<string, unknown>;
   const fromMe = Boolean(key.fromMe);
-  const remoteJid = String(key.remoteJid ?? "");
+  const ident = EvolutionClient.identityFromKey(key, data);
+  const remoteJid = ident.sendJid || ident.remoteJid;
   if (!remoteJid || remoteJid.includes("@g.us") || remoteJid === "status@broadcast") return;
 
-  const phone = EvolutionClient.phoneFromJid(remoteJid);
+  const phone = ident.phone;
   if (!phone) return;
 
   const message = (data.message ?? {}) as Record<string, unknown>;
@@ -509,7 +510,24 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     const dup = await prisma.whatsAppMessage.findUnique({
       where: { contactId_externalId: { contactId: contact.id, externalId } },
     });
-    if (dup) return;
+    if (dup) {
+      if (
+        !fromMe &&
+        (contact.status === "bot" || contact.status === "closed")
+      ) {
+        const recentOut = await prisma.whatsAppMessage.findFirst({
+          where: {
+            contactId: contact.id,
+            direction: "out",
+            createdAt: { gte: new Date(Date.now() - 60_000) },
+          },
+        });
+        if (!recentOut) {
+          await processInboundBot(contact.id, body, contact.status === "closed" || isNew);
+        }
+      }
+      return;
+    }
   }
 
   if (!fromMe) {

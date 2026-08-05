@@ -55,12 +55,20 @@ export function buildMenuText(welcome: string, options: FlowOption[]): string {
   return `${welcome}\n\n${lines.join("\n")}`;
 }
 
-async function botSend(phone: string, text: string): Promise<string | null> {
+async function botSend(
+  contact: { phone: string; remoteJid?: string | null },
+  text: string
+): Promise<string | null> {
   if (!evolution.enabled) {
     console.warn("[bot] Evolution off, skip send:", text.slice(0, 80));
     return null;
   }
-  const r = await evolution.sendText(phone, text);
+  const r = await evolution.sendText(contact.remoteJid || contact.phone, text);
+  if (!r.ok) {
+    console.error("[bot] falha ao enviar WhatsApp", r.status, (r.text || "").slice(0, 300));
+    throw new Error(`Falha ao enviar WhatsApp (${r.status})`);
+  }
+  console.log("[bot] enviado:", text.replace(/\s+/g, " ").slice(0, 80));
   return EvolutionClient.extractMessageId(r.data);
 }
 
@@ -138,7 +146,7 @@ export async function sendDepartmentMenu(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const externalId = await botSend(contact.phone, DEPT_MENU);
+  const externalId = await botSend(contact, DEPT_MENU);
   await persistBotOut(
     contactId,
     DEPT_MENU,
@@ -158,7 +166,7 @@ export async function sendSellersMenu(contactId: string) {
   const flow = await getFlow();
   const options = asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS;
   const text = buildMenuText(flow.welcomeMessage, options);
-  const externalId = await botSend(contact.phone, text);
+  const externalId = await botSend(contact, text);
   await persistBotOut(
     contactId,
     text,
@@ -345,18 +353,18 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     // Financeiro → fila (sem escolha de vendedor)
     const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
     if (!queue) {
-      await botSend(contact.phone, "No momento não há fila configurada. Aguarde um momento.");
+      await botSend(contact, "No momento não há fila configurada. Aguarde um momento.");
       return;
     }
     await offerFromQueue(contactId, queue.id);
     const msg =
       "Certo! Encaminhamos você para o setor Financeiro. Em breve um atendente irá te responder.";
-    const externalId = await botSend(contact.phone, msg);
+    const externalId = await botSend(contact, msg);
     await persistBotOut(contactId, msg, undefined, externalId);
     return;
   }
 
-  await botSend(contact.phone, "Opção inválida.\n\n" + DEPT_MENU);
+  await botSend(contact, "Opção inválida.\n\n" + DEPT_MENU);
 }
 
 async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
@@ -393,7 +401,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
       where: { id: contactId },
     });
     await botSend(
-      contact.phone,
+      contact,
       "Opção inválida. Digite o número da opção:\n\n" +
         buildMenuText(flow.welcomeMessage, options)
     );
@@ -407,7 +415,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     });
     if (!userId) {
       await botSend(
-        contact.phone,
+        contact,
         "Este atendente ainda não está configurado. Digite 4 para fila sem preferência, ou fale com o administrador."
       );
       return;
@@ -415,7 +423,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     await offerToAgent({ contactId, userId });
     const msg =
       "Perfeito! Encaminhamos você para o atendente escolhido. Em breve ele irá te responder.";
-    const externalId = await botSend(contact.phone, msg);
+    const externalId = await botSend(contact, msg);
     await persistBotOut(contactId, msg, undefined, externalId);
     return;
   }
@@ -429,7 +437,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     const contact = await prisma.whatsAppContact.findUniqueOrThrow({
       where: { id: contactId },
     });
-    await botSend(contact.phone, "No momento não há fila configurada. Aguarde um momento.");
+    await botSend(contact, "No momento não há fila configurada. Aguarde um momento.");
     return;
   }
 
@@ -438,7 +446,7 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     where: { id: contactId },
   });
   const msg = "Certo! Você entrou na fila de atendimento. Em breve um vendedor irá te atender.";
-  const externalId = await botSend(contact.phone, msg);
+  const externalId = await botSend(contact, msg);
   await persistBotOut(contactId, msg, undefined, externalId);
 }
 
@@ -448,7 +456,7 @@ export async function handleOutsideHours(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const externalId = await botSend(contact.phone, flow.closedMessage);
+  const externalId = await botSend(contact, flow.closedMessage);
   await persistBotOut(contactId, flow.closedMessage, undefined, externalId);
   const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
   const now = new Date();

@@ -17,7 +17,6 @@ const schema = z.object({
     .transform((v) => v !== "false" && v !== "0"),
   WHATSAPP_API_URL: z.string().optional(),
   WHATSAPP_API_KEY: z.string().optional(),
-  WHATSAPP_INSTANCE: z.string().optional(),
   /** Número comercial para wa.me (DDI+DDD+número). */
   WHATSAPP_BUSINESS_PHONE: z.string().optional(),
   /** Keyword no wa.me que pula menu departamento → vendedores. */

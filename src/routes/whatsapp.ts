@@ -339,10 +339,10 @@ whatsappRouter.get("/connection", async (req, res) => {
     const row = await prisma.whatsAppConnection.upsert({
       where: { id: "default" },
       update: {},
-      create: { id: "default", instanceName: env.WHATSAPP_INSTANCE ?? "BIANO" },
+      create: { id: "default", instanceName: "", status: "disconnected" },
     });
     let live: unknown = null;
-    if (evolution.credentialsOk) {
+    if (evolution.credentialsOk && row.instanceName) {
       const st = await evolution.connectionState(row.instanceName);
       live = st.data;
       if (st.ok) {
@@ -377,9 +377,9 @@ whatsappRouter.post("/connection", async (req, res) => {
       res.status(400).json({ error: "Configure WHATSAPP_API_URL e WHATSAPP_API_KEY no .env" });
       return;
     }
-    const instanceName = String(req.body?.instanceName ?? env.WHATSAPP_INSTANCE ?? "BIANO").trim();
+    const instanceName = String(req.body?.instanceName ?? "").trim();
     if (!instanceName) {
-      res.status(400).json({ error: "instanceName obrigatório" });
+      res.status(400).json({ error: "Informe o nome da instância em Conectar WhatsApp" });
       return;
     }
 

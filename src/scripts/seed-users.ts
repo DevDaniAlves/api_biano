@@ -88,7 +88,7 @@ async function main() {
   await prisma.whatsAppConnection.upsert({
     where: { id: "default" },
     update: {},
-    create: { id: "default", instanceName: "BIANO", status: "disconnected" },
+    create: { id: "default", instanceName: "", status: "disconnected" },
   });
 
   const sampleProducts = [

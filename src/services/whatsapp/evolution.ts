@@ -4,12 +4,10 @@ import { prisma } from "../../db.js";
 export class EvolutionClient {
   private baseUrl: string;
   private apiKey: string;
-  private instanceFallback: string;
 
   constructor() {
     this.baseUrl = (env.WHATSAPP_API_URL ?? "").replace(/\/+$/, "");
     this.apiKey = env.WHATSAPP_API_KEY ?? "";
-    this.instanceFallback = env.WHATSAPP_INSTANCE ?? "BIANO";
   }
 
   get credentialsOk() {
@@ -20,14 +18,10 @@ export class EvolutionClient {
     return this.credentialsOk;
   }
 
-  /** Instância conectada pelo QR (Conectar). Sem fallback de .env. */
+  /** Sempre a instância salva em Conectar WhatsApp. */
   async resolveInstance(): Promise<string> {
     const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
     return (row?.instanceName || "").trim();
-  }
-
-  get instanceName() {
-    return this.instanceFallback;
   }
 
   private headers() {
@@ -55,7 +49,70 @@ export class EvolutionClient {
   }
 
   static phoneFromJid(jid?: string | null) {
-    return (jid || "").split("@")[0].replace(/\D/g, "");
+    if (!jid || jid.includes("@lid") || jid.includes("@g.us") || jid.includes("broadcast")) {
+      return "";
+    }
+    return jid.split("@")[0].replace(/\D/g, "");
+  }
+
+  /** LID + telefone do webhook (WhatsApp addressingMode=lid). */
+  static identityFromKey(key: Record<string, unknown>, data?: Record<string, unknown>) {
+    const remoteJid = String(key.remoteJid ?? "");
+    const remoteJidAlt = String(key.remoteJidAlt ?? "");
+    const senderPn = String(
+      key.senderPn ?? data?.senderPn ?? data?.sender_pn ?? key.sender_pn ?? ""
+    );
+    const jids = [remoteJid, remoteJidAlt].filter(Boolean);
+    const lidJid = jids.find((j) => j.includes("@lid")) ?? "";
+    const pnJid =
+      jids.find((j) => j.includes("@s.whatsapp.net")) ||
+      (senderPn ? `${String(senderPn).replace(/\D/g, "")}@s.whatsapp.net` : "");
+    const phone =
+      EvolutionClient.phoneFromJid(pnJid) || EvolutionClient.toNumber(senderPn);
+    const sendJid = lidJid || pnJid || remoteJid;
+    return { phone, sendJid, lidJid, pnJid, remoteJid, remoteJidAlt };
+  }
+
+  private async lookupLid(digits: string): Promise<string | null> {
+    const instance = await this.resolveInstance();
+    if (!instance || !digits) return null;
+    const r = await this.req("POST", `/chat/whatsappNumbers/${encodeURIComponent(instance)}`, {
+      numbers: [digits],
+    });
+    const arr = Array.isArray(r.data)
+      ? r.data
+      : Array.isArray((r.data as { data?: unknown } | null)?.data)
+        ? ((r.data as { data: unknown[] }).data)
+        : [];
+    const row = arr[0] as Record<string, unknown> | undefined;
+    if (!row) return null;
+    for (const v of [row.lid, row.lidJid, row.jid]) {
+      const s = String(v ?? "");
+      if (s.includes("@lid")) return s;
+    }
+    return null;
+  }
+
+  private async expandSendTargets(to: string): Promise<string[]> {
+    const trimmed = to.trim();
+    const digits = trimmed.includes("@")
+      ? EvolutionClient.phoneFromJid(trimmed)
+      : EvolutionClient.toNumber(trimmed);
+    const out: string[] = [];
+    const add = (v: string) => {
+      if (v && !out.includes(v)) out.push(v);
+    };
+    if (trimmed.includes("@lid")) add(trimmed);
+    if (digits) {
+      const lid = await this.lookupLid(digits).catch(() => null);
+      if (lid) add(lid);
+    }
+    if (trimmed.includes("@s.whatsapp.net")) add(trimmed);
+    if (digits) {
+      add(`${digits}@s.whatsapp.net`);
+      add(digits);
+    }
+    return out;
   }
 
   /** Extrai o id da mensagem na resposta do send (vários formatos Evolution). */
@@ -82,19 +139,28 @@ export class EvolutionClient {
     return null;
   }
 
-  async sendText(phone: string, text: string) {
+  async sendText(to: string, text: string) {
     const instance = await this.resolveInstance();
     if (!instance) {
-      console.error("[evolution] sendText: nenhuma instância conectada (QR)");
-      return { ok: false, status: 0, data: null, text: "WhatsApp não conectado pelo QR" };
+      console.error("[evolution] sendText: nenhuma instância em Conectar WhatsApp");
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
     }
-    const number = EvolutionClient.toNumber(phone);
-    const r = await this.req("POST", `/message/sendText/${encodeURIComponent(instance)}`, {
-      number,
-      text,
-    });
-    if (!r.ok) console.error("[evolution] sendText", r.status, r.text.slice(0, 300));
-    return r;
+    const targets = await this.expandSendTargets(to);
+    let last = { ok: false, status: 0, data: null as unknown, text: "sem destinatário" };
+    for (const number of targets) {
+      const r = await this.req("POST", `/message/sendText/${encodeURIComponent(instance)}`, {
+        number,
+        text,
+        delay: 600,
+      });
+      last = r;
+      if (r.ok) {
+        console.log("[evolution] sendText", instance, number, "ok");
+        return r;
+      }
+      console.error("[evolution] sendText", instance, number, r.status, r.text.slice(0, 220));
+    }
+    return last;
   }
 
   /** Evolution v2 — imagem/documento via base64 ou URL. */
@@ -108,20 +174,28 @@ export class EvolutionClient {
   }) {
     const instance = await this.resolveInstance();
     if (!instance) {
-      console.error("[evolution] sendMedia: nenhuma instância conectada (QR)");
-      return { ok: false, status: 0, data: null, text: "WhatsApp não conectado pelo QR" };
+      console.error("[evolution] sendMedia: nenhuma instância em Conectar WhatsApp");
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
     }
-    const number = EvolutionClient.toNumber(opts.phone);
-    const r = await this.req("POST", `/message/sendMedia/${encodeURIComponent(instance)}`, {
-      number,
-      mediatype: opts.mediatype ?? "image",
-      mimetype: opts.mimetype,
-      caption: opts.caption ?? "",
-      media: opts.media,
-      fileName: opts.fileName ?? "file",
-    });
-    if (!r.ok) console.error("[evolution] sendMedia", r.status, r.text.slice(0, 300));
-    return r;
+    const targets = await this.expandSendTargets(opts.phone);
+    let last = { ok: false, status: 0, data: null as unknown, text: "sem destinatário" };
+    for (const number of targets) {
+      const r = await this.req("POST", `/message/sendMedia/${encodeURIComponent(instance)}`, {
+        number,
+        mediatype: opts.mediatype ?? "image",
+        mimetype: opts.mimetype,
+        caption: opts.caption ?? "",
+        media: opts.media,
+        fileName: opts.fileName ?? "file",
+      });
+      last = r;
+      if (r.ok) {
+        console.log("[evolution] sendMedia", instance, number, "ok");
+        return r;
+      }
+      console.error("[evolution] sendMedia", instance, number, r.status, r.text.slice(0, 220));
+    }
+    return last;
   }
 
   async createInstance(instanceName: string) {

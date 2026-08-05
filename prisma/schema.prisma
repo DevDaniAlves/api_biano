@@ -254,7 +254,7 @@ model WhatsAppFlow {
 /** Instância Evolution conectada via UI (singleton). */
 model WhatsAppConnection {
   id            String   @id @default("default")
-  instanceName  String   @default("BIANO")
+  instanceName  String   @default("")
   status        String   @default("disconnected")
   lastQr        String?
   updatedAt     DateTime @updatedAt
