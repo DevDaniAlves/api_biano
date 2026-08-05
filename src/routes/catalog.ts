@@ -11,9 +11,11 @@ catalogRouter.get("/config", (_req, res) => {
   const phone = (env.WHATSAPP_BUSINESS_PHONE ?? "").replace(/\D/g, "");
   const keyword = env.CATALOG_WA_KEYWORD;
   const mode = env.CATALOG_CONTACT_MODE;
+  const preview =
+    `Olá! Vim pelo catálogo da Calangus Moda Jovem e gostaria de falar com um vendedor.\n\n${keyword}`;
   const waLink =
     mode === "wa_me" && phone
-      ? `https://wa.me/${phone}?text=${encodeURIComponent(keyword)}`
+      ? `https://wa.me/${phone}?text=${encodeURIComponent(preview)}`
       : null;
   res.json({ mode, waLink, keyword, phone: phone || null });
 });
