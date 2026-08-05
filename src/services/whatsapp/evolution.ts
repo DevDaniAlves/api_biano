@@ -160,6 +160,26 @@ export class EvolutionClient {
     return r;
   }
 
+  async sendWhatsAppAudio(opts: { phone: string; audio: string }) {
+    const instance = await this.resolveInstance();
+    if (!instance) {
+      console.error("[evolution] sendWhatsAppAudio: nenhuma instância em Conectar WhatsApp");
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
+    }
+    const number = this.sendNumber(opts.phone);
+    const r = await this.req("POST", `/message/sendWhatsAppAudio/${encodeURIComponent(instance)}`, {
+      number,
+      audio: opts.audio,
+      encoding: true,
+    });
+    if (!r.ok) {
+      console.error("[evolution] sendWhatsAppAudio", instance, number, r.status, r.text.slice(0, 300));
+    } else {
+      console.log("[evolution] sendWhatsAppAudio", instance, number, "ok");
+    }
+    return r;
+  }
+
   async createInstance(instanceName: string, number?: string) {
     return this.req("POST", "/instance/create", {
       instanceName,

@@ -59,48 +59,79 @@ function saveBase64Media(
   return `/uploads/${name}`;
 }
 
+function unwrapWaMessage(message: Record<string, unknown>): Record<string, unknown> {
+  const wrappers = [
+    "ephemeralMessage",
+    "viewOnceMessage",
+    "viewOnceMessageV2",
+    "viewOnceMessageV2Extension",
+    "documentWithCaptionMessage",
+    "editedMessage",
+  ];
+  for (const w of wrappers) {
+    const inner = message[w];
+    if (inner && typeof inner === "object") {
+      const msg = (inner as { message?: Record<string, unknown> }).message;
+      if (msg) return unwrapWaMessage(msg);
+    }
+  }
+  return message;
+}
+
 function quotePreviewFromMessage(quoted: Record<string, unknown> | null | undefined) {
   if (!quoted) return null;
-  if (typeof quoted.conversation === "string" && quoted.conversation.trim()) return quoted.conversation;
-  const ext = quoted.extendedTextMessage;
+  const q = unwrapWaMessage(quoted);
+  if (typeof q.conversation === "string" && q.conversation.trim()) return q.conversation;
+  const ext = q.extendedTextMessage;
   if (ext && typeof ext === "object") {
     const text = (ext as { text?: string }).text;
     if (text) return text;
   }
-  if (quoted.imageMessage) {
-    const cap = (quoted.imageMessage as { caption?: string }).caption;
+  if (q.imageMessage) {
+    const cap = (q.imageMessage as { caption?: string }).caption;
     return cap?.trim() || "[imagem]";
   }
-  if (quoted.videoMessage) return "[vídeo]";
-  if (quoted.audioMessage) return "[áudio]";
-  if (quoted.documentMessage) {
-    return String((quoted.documentMessage as { fileName?: string }).fileName ?? "[documento]");
+  if (q.videoMessage) {
+    const cap = (q.videoMessage as { caption?: string }).caption;
+    return cap?.trim() || "[vídeo]";
   }
-  if (quoted.stickerMessage) return "[figurinha]";
+  if (q.audioMessage || q.pttMessage) return "[áudio]";
+  if (q.documentMessage) {
+    return String((q.documentMessage as { fileName?: string }).fileName ?? "[documento]");
+  }
+  if (q.stickerMessage) return "[figurinha]";
   return null;
 }
 
 function extractQuote(message: Record<string, unknown>, data: Record<string, unknown>) {
-  const candidates = [
-    data.contextInfo,
-    message.contextInfo,
-    (message.extendedTextMessage as Record<string, unknown> | undefined)?.contextInfo,
-    (message.imageMessage as Record<string, unknown> | undefined)?.contextInfo,
-    (message.videoMessage as Record<string, unknown> | undefined)?.contextInfo,
-    (message.audioMessage as Record<string, unknown> | undefined)?.contextInfo,
-    (message.documentMessage as Record<string, unknown> | undefined)?.contextInfo,
-    (message.stickerMessage as Record<string, unknown> | undefined)?.contextInfo,
-  ];
-  for (const ctx of candidates) {
-    if (!ctx || typeof ctx !== "object") continue;
-    const c = ctx as Record<string, unknown>;
-    const stanzaId = String(c.stanzaId ?? c.stanzaID ?? "").trim();
-    const quoted = (c.quotedMessage as Record<string, unknown> | undefined) ?? undefined;
+  const skip = new Set([
+    "deviceListMetadata",
+    "messageSecret",
+    "jpegThumbnail",
+    "thumbnailDirectPath",
+    "mediaKey",
+  ]);
+  function walk(node: unknown, depth: number): { stanzaId: string | null; preview: string | null } | null {
+    if (!node || typeof node !== "object" || depth > 8) return null;
+    if (ArrayBuffer.isView(node)) return null;
+    const o = node as Record<string, unknown>;
+    const stanzaId = String(o.stanzaId ?? o.stanzaID ?? o.quotedStanzaID ?? "").trim();
+    const quoted =
+      (o.quotedMessage as Record<string, unknown> | undefined) ||
+      (o.quotedMsg as Record<string, unknown> | undefined);
     const preview = quotePreviewFromMessage(quoted);
-    if (!stanzaId && !preview) continue;
-    return { stanzaId: stanzaId || null, preview };
+    if (stanzaId || preview) return { stanzaId: stanzaId || null, preview };
+    for (const [k, v] of Object.entries(o)) {
+      if (skip.has(k) || v == null || typeof v !== "object") continue;
+      const found = walk(v, depth + 1);
+      if (found) return found;
+    }
+    return null;
   }
-  return { stanzaId: null as string | null, preview: null as string | null };
+  return walk({ message, data, contextInfo: data.contextInfo }, 0) ?? {
+    stanzaId: null as string | null,
+    preview: null as string | null,
+  };
 }
 
 async function resolveMediaFile(opts: {
@@ -343,6 +374,7 @@ export async function sendImageMessage(opts: {
   fileName: string;
   caption?: string;
   publicUrl: string;
+  mediatype?: "image" | "audio" | "video" | "document";
 }) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: opts.contactId },
@@ -358,28 +390,55 @@ export async function sendImageMessage(opts: {
   }
   if (!evolution.enabled) throw new Error("Evolution não configurada");
 
-  const caption = opts.caption
-    ? await sellerPrefix(opts.userId, opts.caption)
-    : await sellerPrefix(opts.userId, "[imagem]");
+  const mediatype = opts.mediatype ?? "image";
+  const fallback =
+    mediatype === "audio"
+      ? "[áudio]"
+      : mediatype === "video"
+        ? "[vídeo]"
+        : mediatype === "document"
+          ? opts.fileName || "[documento]"
+          : "[imagem]";
+  const caption =
+    mediatype === "audio"
+      ? ""
+      : opts.caption
+        ? await sellerPrefix(opts.userId, opts.caption)
+        : await sellerPrefix(opts.userId, fallback);
 
   const buf = fs.readFileSync(opts.filePath);
   const b64 = buf.toString("base64");
+  const to = contact.remoteJid || contact.phone;
 
-  const r = await evolution.sendMedia({
-    phone: contact.remoteJid || contact.phone,
-    media: b64,
-    mimetype: opts.mimetype,
-    caption,
-    fileName: opts.fileName,
-    mediatype: "image",
-  });
+  let r =
+    mediatype === "audio"
+      ? await evolution.sendWhatsAppAudio({ phone: to, audio: b64 })
+      : await evolution.sendMedia({
+          phone: to,
+          media: b64,
+          mimetype: opts.mimetype,
+          caption,
+          fileName: opts.fileName,
+          mediatype,
+        });
+  if (!r.ok && mediatype === "audio") {
+    r = await evolution.sendMedia({
+      phone: to,
+      media: b64,
+      mimetype: opts.mimetype || "audio/ogg; codecs=opus",
+      caption: "",
+      fileName: opts.fileName || "audio.ogg",
+      mediatype: "audio",
+    });
+  }
   if (!r.ok) throw new Error(`Falha Evolution mídia: ${r.status} ${r.text.slice(0, 200)}`);
 
   const externalId = EvolutionClient.extractMessageId(r.data);
+  const body = mediatype === "audio" ? fallback : caption || fallback;
   const msg = await upsertOutboundMessage({
     contactId: contact.id,
-    type: "image",
-    body: caption,
+    type: mediatype,
+    body,
     mediaUrl: opts.publicUrl,
     sentById: opts.userId,
     externalId,
@@ -388,7 +447,7 @@ export async function sendImageMessage(opts: {
     where: { id: contact.id },
     data: {
       lastMessageAt: new Date(),
-      lastMessagePreview: caption.slice(0, 120),
+      lastMessagePreview: body.slice(0, 120),
       ...(role === "admin" ? {} : { status: "human" as const, assignedToId: opts.userId }),
     },
   });
@@ -586,7 +645,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   const phone = ident.phone;
   if (!phone) return;
 
-  const message = (data.message ?? {}) as Record<string, unknown>;
+  const message = unwrapWaMessage((data.message ?? {}) as Record<string, unknown>);
   const pushName = (data.pushName as string) || null;
   const externalId = String(key.id ?? "");
 
@@ -636,6 +695,11 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   const isNew = !existingContact;
 
   const quote = extractQuote(message, data);
+  if (quote.stanzaId || quote.preview) {
+    console.log("[webhook] quote", phone, quote.stanzaId ?? "-", (quote.preview ?? "").slice(0, 80));
+  } else if (!fromMe) {
+    console.log("[webhook] sem-quote", phone, type, Object.keys(message).join(","));
+  }
   if (["image", "sticker", "video", "audio", "document"].includes(type)) {
     mediaUrl = await resolveMediaFile({
       type,
@@ -690,6 +754,15 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
       where: { contactId_externalId: { contactId: contact.id, externalId } },
     });
     if (dup) {
+      if ((!dup.quotedBody && quote.preview) || (!dup.quotedExternalId && quote.stanzaId)) {
+        await prisma.whatsAppMessage.update({
+          where: { id: dup.id },
+          data: {
+            quotedExternalId: quote.stanzaId ?? dup.quotedExternalId,
+            quotedBody: quote.preview ?? dup.quotedBody,
+          },
+        });
+      }
       if (
         !fromMe &&
         !contact.webhookPaused &&

@@ -43,14 +43,42 @@ const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
     filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname) || ".jpg";
+      const fromName = path.extname(file.originalname);
+      const mime = file.mimetype || "";
+      const fromMime = mime.includes("webm")
+        ? ".webm"
+        : mime.includes("ogg")
+          ? ".ogg"
+          : mime.includes("mp4") || mime.includes("quicktime")
+            ? ".mp4"
+            : mime.includes("mpeg") || mime.includes("mp3")
+              ? ".mp3"
+              : mime.startsWith("audio/")
+                ? ".ogg"
+                : mime.startsWith("video/")
+                  ? ".mp4"
+                  : mime.startsWith("image/")
+                    ? ".jpg"
+                    : mime.includes("pdf")
+                      ? ".pdf"
+                      : "";
+      const ext = fromName || fromMime || ".bin";
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
     },
   }),
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Apenas imagens"));
+    const ok =
+      file.mimetype.startsWith("image/") ||
+      file.mimetype.startsWith("audio/") ||
+      file.mimetype.startsWith("video/") ||
+      file.mimetype === "application/pdf" ||
+      file.mimetype.includes("word") ||
+      file.mimetype.includes("excel") ||
+      file.mimetype.includes("spreadsheet") ||
+      file.mimetype.includes("officedocument");
+    if (ok) cb(null, true);
+    else cb(new Error("Tipo de arquivo não suportado"));
   },
 });
 
@@ -246,6 +274,13 @@ whatsappRouter.post("/messages", async (req, res) => {
   }
 });
 
+function mediaKind(mimetype: string): "image" | "audio" | "video" | "document" {
+  if (mimetype.startsWith("image/")) return "image";
+  if (mimetype.startsWith("audio/")) return "audio";
+  if (mimetype.startsWith("video/")) return "video";
+  return "document";
+}
+
 whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) => {
   try {
     const contactId = String(req.body?.contactId ?? "");
@@ -263,6 +298,7 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
       fileName: req.file.originalname,
       caption: req.body?.caption ? String(req.body.caption) : undefined,
       publicUrl,
+      mediatype: mediaKind(req.file.mimetype),
     });
     res.json(msg);
   } catch (err) {
