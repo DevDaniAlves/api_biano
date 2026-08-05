@@ -395,6 +395,16 @@ whatsappRouter.get("/connection", async (req, res) => {
           data: { status: String(state) },
         });
         row.status = String(state);
+      } else {
+        const hint = `${st.status} ${st.text}`.toLowerCase();
+        if (st.status === 404 || hint.includes("not found") || hint.includes("does not exist")) {
+          await prisma.whatsAppConnection.update({
+            where: { id: "default" },
+            data: { status: "disconnected", lastQr: null },
+          });
+          row.status = "disconnected";
+          row.lastQr = null;
+        }
       }
     }
     res.json({
@@ -423,7 +433,22 @@ whatsappRouter.post("/connection", async (req, res) => {
       return;
     }
 
-    await evolution.createInstance(instanceName);
+    const created = await evolution.createInstance(instanceName);
+    if (!created.ok) {
+      const hint = `${created.status} ${created.text}`.toLowerCase();
+      const exists =
+        created.status === 403 ||
+        created.status === 409 ||
+        hint.includes("already") ||
+        hint.includes("exist") ||
+        hint.includes("já existe");
+      if (!exists) {
+        res.status(400).json({
+          error: created.text?.slice(0, 280) || `Falha ao criar instância (${created.status})`,
+        });
+        return;
+      }
+    }
     const connect = await evolution.connectInstance(instanceName);
     const data = connect.data as {
       base64?: string;
