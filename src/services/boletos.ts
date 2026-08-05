@@ -113,6 +113,11 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Pausa aleatória de 1 a 2 minutos entre disparos. */
+function randomDispatchDelayMs() {
+  return 60_000 + Math.floor(Math.random() * 60_001);
+}
+
 function resolveDispatchPhone(boletoPhone: string): string {
   const override = env.WHATSAPP_OVERRIDE_PHONE?.replace(/\D/g, "") ?? "";
   if (override) {
@@ -137,7 +142,8 @@ export async function dispatchPending(vencimento?: string) {
     `[dispatch] início: ${boletos.length} pending | url=${env.WHATSAPP_API_URL} | instance=${instance || "(QR não conectado)"} | override=${env.WHATSAPP_OVERRIDE_PHONE ?? "-"}`
   );
 
-  for (const b of boletos) {
+  for (let i = 0; i < boletos.length; i++) {
+    const b = boletos[i];
     const phone = resolveDispatchPhone(b.clienteTelefone);
     if (!phone || phone.length < 12) {
       console.warn(`[dispatch] SKIP #${b.id} telefone inválido: ${b.clienteTelefone}`);
@@ -176,7 +182,15 @@ export async function dispatchPending(vencimento?: string) {
       failed++;
     }
 
-    if (env.DISPATCH_DELAY_MS > 0) await sleep(env.DISPATCH_DELAY_MS);
+    const hasMore = boletos.slice(i + 1).some((next) => {
+      const p = resolveDispatchPhone(next.clienteTelefone);
+      return p && p.length >= 12;
+    });
+    if (hasMore) {
+      const ms = randomDispatchDelayMs();
+      console.log(`[dispatch] pausa ${Math.round(ms / 1000)}s até o próximo`);
+      await sleep(ms);
+    }
   }
 
   console.log(`[dispatch] fim: sent=${sent} failed=${failed} skipped=${skipped}`);
