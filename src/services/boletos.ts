@@ -2,6 +2,7 @@ import type { Boleto } from "@prisma/client";
 import { env } from "../config.js";
 import { prisma } from "../db.js";
 import type { CsvBoletoRow } from "./csv.js";
+import { evolution } from "./whatsapp/evolution.js";
 
 export async function upsertBoletosFromCsv(
   rows: CsvBoletoRow[],
@@ -89,69 +90,23 @@ function formatBrDate(ymd: string): string {
 }
 
 async function sendWhatsApp(phone: string, text: string): Promise<{ ok: boolean; error?: string }> {
-  if (!env.WHATSAPP_API_URL) {
-    return { ok: false, error: "WHATSAPP_API_URL não configurada" };
+  if (!evolution.enabled) {
+    return { ok: false, error: "Evolution não configurada (WHATSAPP_API_URL / WHATSAPP_API_KEY)" };
+  }
+  const instance = await evolution.resolveInstance();
+  if (!instance) {
+    return { ok: false, error: "WhatsApp não conectado. Conecte pelo QR em Conectar." };
   }
   const number = phone.replace(/\D/g, "");
   if (number.length < 12) return { ok: false, error: `Telefone inválido: ${phone}` };
 
-  const url = buildEvolutionSendTextUrl(env.WHATSAPP_API_URL, env.WHATSAPP_INSTANCE);
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (env.WHATSAPP_API_KEY) {
-    headers.apikey = env.WHATSAPP_API_KEY;
+  console.log(`[whatsapp] sendText instance=${instance} number=${number} textLen=${text.length}`);
+  const r = await evolution.sendText(phone, text);
+  console.log(`[whatsapp] status=${r.status} body=${r.text.slice(0, 500)}`);
+  if (!r.ok) {
+    return { ok: false, error: `HTTP ${r.status}: ${r.text.slice(0, 500)}` };
   }
-
-  const body = {
-    number,
-    text,
-    delay: 1200,
-    linkPreview: false,
-  };
-
-  console.log(`[whatsapp] POST ${url}`);
-  console.log(`[whatsapp] number=${number} textLen=${text.length}`);
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-    const detail = await res.text().catch(() => "");
-    console.log(`[whatsapp] status=${res.status} body=${detail.slice(0, 500)}`);
-
-    if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status}: ${detail.slice(0, 500)}` };
-    }
-    return { ok: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[whatsapp] ERRO de rede:`, err);
-    return { ok: false, error: msg };
-  }
-}
-
-/** Monta URL Evolution v2: {base}/message/sendText/{instance} */
-function buildEvolutionSendTextUrl(base: string, instance?: string): string {
-  let url = base.trim().replace(/\/$/, "");
-
-  if (url.includes("{instance}") && instance) {
-    return url.replaceAll("{instance}", instance);
-  }
-
-  // Já é o endpoint completo
-  if (/\/message\/sendText(\/|$)/i.test(url)) {
-    if (instance && !url.endsWith(`/${instance}`) && !/\/message\/sendText\/[^/]+$/i.test(url)) {
-      return `${url}/${instance}`;
-    }
-    return url;
-  }
-
-  // Só o host (ex.: Railway) → completa o path
-  if (instance) {
-    return `${url}/message/sendText/${instance}`;
-  }
-  return `${url}/message/sendText`;
+  return { ok: true };
 }
 
 function sleep(ms: number) {
@@ -177,8 +132,9 @@ export async function dispatchPending(vencimento?: string) {
   let failed = 0;
   let skipped = 0;
 
+  const instance = await evolution.resolveInstance();
   console.log(
-    `[dispatch] início: ${boletos.length} pending | url=${env.WHATSAPP_API_URL} | instance=${env.WHATSAPP_INSTANCE ?? "-"} | override=${env.WHATSAPP_OVERRIDE_PHONE ?? "-"}`
+    `[dispatch] início: ${boletos.length} pending | url=${env.WHATSAPP_API_URL} | instance=${instance || "(QR não conectado)"} | override=${env.WHATSAPP_OVERRIDE_PHONE ?? "-"}`
   );
 
   for (const b of boletos) {

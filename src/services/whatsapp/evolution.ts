@@ -20,9 +20,10 @@ export class EvolutionClient {
     return this.credentialsOk;
   }
 
+  /** Instância conectada pelo QR (Conectar). Sem fallback de .env. */
   async resolveInstance(): Promise<string> {
     const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
-    return row?.instanceName || this.instanceFallback;
+    return (row?.instanceName || "").trim();
   }
 
   get instanceName() {
@@ -83,6 +84,10 @@ export class EvolutionClient {
 
   async sendText(phone: string, text: string) {
     const instance = await this.resolveInstance();
+    if (!instance) {
+      console.error("[evolution] sendText: nenhuma instância conectada (QR)");
+      return { ok: false, status: 0, data: null, text: "WhatsApp não conectado pelo QR" };
+    }
     const number = EvolutionClient.toNumber(phone);
     const r = await this.req("POST", `/message/sendText/${encodeURIComponent(instance)}`, {
       number,
@@ -102,6 +107,10 @@ export class EvolutionClient {
     mediatype?: "image" | "document" | "audio" | "video";
   }) {
     const instance = await this.resolveInstance();
+    if (!instance) {
+      console.error("[evolution] sendMedia: nenhuma instância conectada (QR)");
+      return { ok: false, status: 0, data: null, text: "WhatsApp não conectado pelo QR" };
+    }
     const number = EvolutionClient.toNumber(opts.phone);
     const r = await this.req("POST", `/message/sendMedia/${encodeURIComponent(instance)}`, {
       number,
