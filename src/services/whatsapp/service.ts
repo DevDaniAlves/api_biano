@@ -524,6 +524,8 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     });
 
     const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contact.id } });
+    const preview = (body ?? "[mensagem]").slice(0, 120);
+    const who = fresh.name || fresh.phone;
 
     if (fresh.status === "awaiting_rating") {
       await handleRatingReply(contact.id, body);
@@ -532,11 +534,24 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
 
     if (isNew || fresh.status === "bot" || fresh.status === "closed") {
       await processInboundBot(contact.id, body, isNew || fresh.status === "closed");
+      const after = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contact.id } });
+      if (after.status === "bot") {
+        const staff = await prisma.user.findMany({
+          where: { active: true },
+          select: { id: true },
+        });
+        notifyUsersSafe(
+          staff.map((u) => u.id),
+          {
+            title: after.name || after.phone,
+            body: preview,
+            contactId: after.id,
+            tag: `wa-bot-${after.id}`,
+          }
+        );
+      }
       return;
     }
-
-    const preview = (body ?? "[mensagem]").slice(0, 120);
-    const who = fresh.name || fresh.phone;
     if (fresh.status === "human" && fresh.assignedToId) {
       notifyUsersSafe([fresh.assignedToId], {
         title: who,

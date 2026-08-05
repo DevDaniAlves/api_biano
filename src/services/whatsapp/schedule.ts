@@ -1,3 +1,5 @@
+import { env } from "../../config.js";
+
 /** Horário comercial padrão e utilidades de agenda (America/Sao_Paulo). */
 
 export const BUSINESS = {
@@ -17,6 +19,7 @@ export function minutesOfDay(d: Date): number {
 }
 
 export function isBusinessHours(d = nowInSaoPaulo()): boolean {
+  if (env.SKIP_BUSINESS_HOURS) return true;
   if (!BUSINESS.weekdays.includes(d.getDay())) return false;
   const m = minutesOfDay(d);
   return m >= BUSINESS.startMin && m < BUSINESS.endMin;

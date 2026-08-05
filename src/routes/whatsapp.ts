@@ -18,6 +18,7 @@ import { evolution } from "../services/whatsapp/evolution.js";
 import {
   deletePushSubscription,
   getVapidPublicKey,
+  pendingBadgeCount,
   savePushSubscription,
 } from "../services/push.js";
 import {
@@ -132,6 +133,15 @@ whatsappRouter.post("/push/subscribe", async (req, res) => {
       userAgent: req.get("user-agent"),
     });
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/push/badge", async (req, res) => {
+  try {
+    const count = await pendingBadgeCount(req.user!.id, req.user!.role);
+    res.json({ count });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

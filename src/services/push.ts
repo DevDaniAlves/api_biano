@@ -23,6 +23,30 @@ export function getVapidPublicKey() {
   return env.VAPID_PUBLIC_KEY ?? null;
 }
 
+/** Badge do ícone: filas novas + mensagens não lidas em andamento. */
+export async function pendingBadgeCount(userId: string, role: "admin" | "seller") {
+  if (role === "admin") {
+    const waiting = await prisma.whatsAppContact.count({ where: { status: "waiting" } });
+    const unread = await prisma.whatsAppContact.aggregate({
+      where: { status: "human", unreadCount: { gt: 0 } },
+      _sum: { unreadCount: true },
+    });
+    return waiting + (unread._sum.unreadCount ?? 0);
+  }
+
+  const waitingExclusive = await prisma.whatsAppContact.count({
+    where: { status: "waiting", offeredToId: userId, openToAll: false },
+  });
+  const waitingOpen = await prisma.whatsAppContact.count({
+    where: { status: "waiting", openToAll: true },
+  });
+  const unread = await prisma.whatsAppContact.aggregate({
+    where: { status: "human", assignedToId: userId, unreadCount: { gt: 0 } },
+    _sum: { unreadCount: true },
+  });
+  return waitingExclusive + waitingOpen + (unread._sum.unreadCount ?? 0);
+}
+
 export async function savePushSubscription(opts: {
   userId: string;
   endpoint: string;
@@ -79,7 +103,11 @@ function urlForUser(role: string, contactId: string) {
 
 export async function notifyUsers(userIds: string[], payload: PushPayload) {
   const ids = [...new Set(userIds.filter(Boolean))];
-  if (ids.length === 0 || !ensureVapid()) return;
+  if (ids.length === 0) return;
+  if (!ensureVapid()) {
+    console.warn("[push] VAPID não configurado — notificação ignorada:", payload.title);
+    return;
+  }
 
   const users = await prisma.user.findMany({
     where: { id: { in: ids }, active: true },
@@ -93,6 +121,12 @@ export async function notifyUsers(userIds: string[], payload: PushPayload) {
   if (subs.length === 0) return;
 
   const roleByUser = new Map(users.map((u) => [u.id, u.role]));
+  const badgeByUser = new Map<string, number>();
+  await Promise.all(
+    users.map(async (u) => {
+      badgeByUser.set(u.id, await pendingBadgeCount(u.id, u.role));
+    })
+  );
 
   await Promise.all(
     subs.map(async (sub) => {
@@ -103,6 +137,7 @@ export async function notifyUsers(userIds: string[], payload: PushPayload) {
         tag: payload.tag ?? `wa-${payload.contactId}`,
         contactId: payload.contactId,
         url: urlForUser(role, payload.contactId),
+        badge: badgeByUser.get(sub.userId) ?? 1,
       });
       try {
         await webpush.sendNotification(

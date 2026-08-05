@@ -43,6 +43,11 @@ const schema = z.object({
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().default("mailto:contato@calangusmodajovem.com"),
+  /** true = ignora horário comercial e escala (teste de notificações). */
+  SKIP_BUSINESS_HOURS: z
+    .string()
+    .default("true")
+    .transform((v) => v !== "false" && v !== "0"),
 });
 
 export const env = schema.parse(process.env);

@@ -197,7 +197,7 @@ async function userIsAvailable(userId: string): Promise<boolean> {
   if (isOnLeave(leaves, now)) return false;
 
   const slots = await prisma.userScheduleSlot.findMany({ where: { userId } });
-  if (!isWithinSchedule(slots, nowInSaoPaulo())) return false;
+  if (!env.SKIP_BUSINESS_HOURS && !isWithinSchedule(slots, nowInSaoPaulo())) return false;
 
   const windows = await loadUserWindows(userId);
   return !isUserUnavailable(windows);
@@ -447,7 +447,7 @@ export async function handleOutsideHours(contactId: string) {
   await persistBotOut(contactId, flow.closedMessage, undefined, externalId);
   const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
   const now = new Date();
-  await prisma.whatsAppContact.update({
+  const updated = await prisma.whatsAppContact.update({
     where: { id: contactId },
     data: {
       status: "waiting",
@@ -459,6 +459,14 @@ export async function handleOutsideHours(contactId: string) {
       lastMessageAt: now,
       lastMessagePreview: flow.closedMessage.slice(0, 120),
     },
+  });
+  void recipientIdsForOpenQueue(updated.queueId).then((ids) => {
+    notifyUsersSafe(ids, {
+      title: "Nova conversa na fila",
+      body: `${updated.name || updated.phone} está aguardando atendimento`,
+      contactId: updated.id,
+      tag: `wa-open-${updated.id}`,
+    });
   });
 }
 
@@ -672,9 +680,18 @@ export async function listContactsForUser(opts: {
       }
     : {};
 
-  const statusFilter = opts.status
-    ? { status: opts.status as ContactStatusFilter }
-    : {};
+  const statusFilter =
+    opts.status === "active"
+      ? { status: { in: ["waiting", "human"] as ContactStatusFilter[] } }
+      : opts.status
+        ? { status: opts.status as ContactStatusFilter }
+        : {};
+
+  const include = {
+    assignedTo: { select: { id: true, name: true } },
+    offeredTo: { select: { id: true, name: true } },
+    queue: { select: { id: true, name: true } },
+  } as const;
 
   if (opts.role === "admin") {
     return prisma.whatsAppContact.findMany({
@@ -683,11 +700,7 @@ export async function listContactsForUser(opts: {
         ...baseSearch,
       },
       orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
-      include: {
-        assignedTo: { select: { id: true, name: true } },
-        offeredTo: { select: { id: true, name: true } },
-        queue: { select: { id: true, name: true } },
-      },
+      include,
     });
   }
 
@@ -702,17 +715,13 @@ export async function listContactsForUser(opts: {
             { status: "awaiting_rating", assignedToId: opts.userId },
             { status: "waiting", offeredToId: opts.userId, openToAll: false },
             { status: "waiting", openToAll: true },
-            { status: "closed" },
+            { status: "closed", assignedToId: opts.userId },
           ],
         },
       ],
     },
     orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
-    include: {
-      assignedTo: { select: { id: true, name: true } },
-      offeredTo: { select: { id: true, name: true } },
-      queue: { select: { id: true, name: true } },
-    },
+    include,
   });
 }
 
