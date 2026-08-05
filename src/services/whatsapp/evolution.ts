@@ -73,46 +73,10 @@ export class EvolutionClient {
     return { phone, sendJid, lidJid, pnJid, remoteJid, remoteJidAlt };
   }
 
-  private async lookupLid(digits: string): Promise<string | null> {
-    const instance = await this.resolveInstance();
-    if (!instance || !digits) return null;
-    const r = await this.req("POST", `/chat/whatsappNumbers/${encodeURIComponent(instance)}`, {
-      numbers: [digits],
-    });
-    const arr = Array.isArray(r.data)
-      ? r.data
-      : Array.isArray((r.data as { data?: unknown } | null)?.data)
-        ? ((r.data as { data: unknown[] }).data)
-        : [];
-    const row = arr[0] as Record<string, unknown> | undefined;
-    if (!row) return null;
-    for (const v of [row.lid, row.lidJid, row.jid]) {
-      const s = String(v ?? "");
-      if (s.includes("@lid")) return s;
-    }
-    return null;
-  }
-
-  private async expandSendTargets(to: string): Promise<string[]> {
+  private sendNumber(to: string) {
     const trimmed = to.trim();
-    const digits = trimmed.includes("@")
-      ? EvolutionClient.phoneFromJid(trimmed)
-      : EvolutionClient.toNumber(trimmed);
-    const out: string[] = [];
-    const add = (v: string) => {
-      if (v && !out.includes(v)) out.push(v);
-    };
-    if (trimmed.includes("@lid")) add(trimmed);
-    if (digits) {
-      const lid = await this.lookupLid(digits).catch(() => null);
-      if (lid) add(lid);
-    }
-    if (trimmed.includes("@s.whatsapp.net")) add(trimmed);
-    if (digits) {
-      add(`${digits}@s.whatsapp.net`);
-      add(digits);
-    }
-    return out;
+    if (trimmed.includes("@")) return trimmed;
+    return EvolutionClient.toNumber(trimmed);
   }
 
   /** Extrai o id da mensagem na resposta do send (vários formatos Evolution). */
@@ -145,22 +109,14 @@ export class EvolutionClient {
       console.error("[evolution] sendText: nenhuma instância em Conectar WhatsApp");
       return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
     }
-    const targets = await this.expandSendTargets(to);
-    let last = { ok: false, status: 0, data: null as unknown, text: "sem destinatário" };
-    for (const number of targets) {
-      const r = await this.req("POST", `/message/sendText/${encodeURIComponent(instance)}`, {
-        number,
-        text,
-        delay: 600,
-      });
-      last = r;
-      if (r.ok) {
-        console.log("[evolution] sendText", instance, number, "ok");
-        return r;
-      }
-      console.error("[evolution] sendText", instance, number, r.status, r.text.slice(0, 220));
-    }
-    return last;
+    const number = this.sendNumber(to);
+    const r = await this.req("POST", `/message/sendText/${encodeURIComponent(instance)}`, {
+      number,
+      text,
+    });
+    if (!r.ok) console.error("[evolution] sendText", instance, number, r.status, r.text.slice(0, 300));
+    else console.log("[evolution] sendText", instance, number, "ok");
+    return r;
   }
 
   /** Evolution v2 — imagem/documento via base64 ou URL. */
@@ -177,25 +133,18 @@ export class EvolutionClient {
       console.error("[evolution] sendMedia: nenhuma instância em Conectar WhatsApp");
       return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
     }
-    const targets = await this.expandSendTargets(opts.phone);
-    let last = { ok: false, status: 0, data: null as unknown, text: "sem destinatário" };
-    for (const number of targets) {
-      const r = await this.req("POST", `/message/sendMedia/${encodeURIComponent(instance)}`, {
-        number,
-        mediatype: opts.mediatype ?? "image",
-        mimetype: opts.mimetype,
-        caption: opts.caption ?? "",
-        media: opts.media,
-        fileName: opts.fileName ?? "file",
-      });
-      last = r;
-      if (r.ok) {
-        console.log("[evolution] sendMedia", instance, number, "ok");
-        return r;
-      }
-      console.error("[evolution] sendMedia", instance, number, r.status, r.text.slice(0, 220));
-    }
-    return last;
+    const number = this.sendNumber(opts.phone);
+    const r = await this.req("POST", `/message/sendMedia/${encodeURIComponent(instance)}`, {
+      number,
+      mediatype: opts.mediatype ?? "image",
+      mimetype: opts.mimetype,
+      caption: opts.caption ?? "",
+      media: opts.media,
+      fileName: opts.fileName ?? "file",
+    });
+    if (!r.ok) console.error("[evolution] sendMedia", instance, number, r.status, r.text.slice(0, 300));
+    else console.log("[evolution] sendMedia", instance, number, "ok");
+    return r;
   }
 
   async createInstance(instanceName: string) {
