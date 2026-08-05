@@ -117,6 +117,7 @@ export async function listContacts(opts: {
   role: "admin" | "seller";
   status?: string;
   search?: string;
+  sellerId?: string;
 }) {
   const contacts = await listContactsForUser(opts);
   return contacts.map((c) => ({
@@ -486,7 +487,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     create: {
       phone,
       remoteJid,
-      name: pushName,
+      name: fromMe ? null : pushName,
       status: "bot",
       lastMessageAt: new Date(),
       lastMessagePreview: (body ?? "").slice(0, 120),
@@ -495,7 +496,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     },
     update: {
       remoteJid,
-      ...(pushName ? { name: pushName } : {}),
+      ...(!fromMe && pushName ? { name: pushName } : {}),
       lastMessageAt: new Date(),
       lastMessagePreview: (body ?? "").slice(0, 120),
       ...(!fromMe
@@ -534,22 +535,6 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
 
     if (isNew || fresh.status === "bot" || fresh.status === "closed") {
       await processInboundBot(contact.id, body, isNew || fresh.status === "closed");
-      const after = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contact.id } });
-      if (after.status === "bot") {
-        const staff = await prisma.user.findMany({
-          where: { active: true },
-          select: { id: true },
-        });
-        notifyUsersSafe(
-          staff.map((u) => u.id),
-          {
-            title: after.name || after.phone,
-            body: preview,
-            contactId: after.id,
-            tag: `wa-bot-${after.id}`,
-          }
-        );
-      }
       return;
     }
     if (fresh.status === "human" && fresh.assignedToId) {

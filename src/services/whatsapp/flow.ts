@@ -203,64 +203,37 @@ async function userIsAvailable(userId: string): Promise<boolean> {
   return !isUserUnavailable(windows);
 }
 
-/** Oferece atendimento a um vendedor específico (10 min) ou abre para todos. */
+/** Oferece atendimento exclusivo a um vendedor (10 min). */
 export async function offerToAgent(opts: {
   contactId: string;
   userId: string;
   queueId?: string | null;
 }) {
-  const available = await userIsAvailable(opts.userId);
   const now = new Date();
   const existing = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: opts.contactId },
   });
-
-  if (available) {
-    const updated = await prisma.whatsAppContact.update({
-      where: { id: opts.contactId },
-      data: {
-        status: "waiting",
-        queueId: opts.queueId ?? undefined,
-        offeredToId: opts.userId,
-        offeredAt: now,
-        openToAll: false,
-        assignedToId: null,
-        assignedAt: null,
-        assumeWaitSeconds: null,
-        firstOfferedAt: existing.firstOfferedAt ?? now,
-        firstOfferedToId: existing.firstOfferedToId ?? opts.userId,
-      },
-    });
-    notifyUsersSafe([opts.userId], {
-      title: "Nova conversa na fila",
-      body: `${updated.name || updated.phone} está aguardando você`,
-      contactId: updated.id,
-      tag: `wa-offer-${updated.id}`,
-    });
-    return updated;
-  }
 
   const updated = await prisma.whatsAppContact.update({
     where: { id: opts.contactId },
     data: {
       status: "waiting",
       queueId: opts.queueId ?? undefined,
-      offeredToId: null,
-      offeredAt: null,
-      openToAll: true,
-      openedToAllAt: existing.openedToAllAt ?? now,
+      offeredToId: opts.userId,
+      offeredAt: now,
+      openToAll: false,
       assignedToId: null,
       assignedAt: null,
       assumeWaitSeconds: null,
+      firstOfferedAt: existing.firstOfferedAt ?? now,
+      firstOfferedToId: existing.firstOfferedToId ?? opts.userId,
     },
   });
-  void recipientIdsForOpenQueue(updated.queueId).then((ids) => {
-    notifyUsersSafe(ids, {
-      title: "Conversa aberta",
-      body: `${updated.name || updated.phone} está aguardando atendimento`,
-      contactId: updated.id,
-      tag: `wa-open-${updated.id}`,
-    });
+  notifyUsersSafe([opts.userId], {
+    title: "Nova conversa na fila",
+    body: `${updated.name || updated.phone} está aguardando você`,
+    contactId: updated.id,
+    tag: `wa-offer-${updated.id}`,
   });
   return updated;
 }
@@ -386,6 +359,30 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
   await botSend(contact.phone, "Opção inválida.\n\n" + DEPT_MENU);
 }
 
+async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
+  if (choice.userId) {
+    const user = await prisma.user.findFirst({
+      where: { id: choice.userId, active: true },
+      select: { id: true },
+    });
+    if (user) return user.id;
+  }
+
+  const sellers = await prisma.user.findMany({
+    where: { active: true, role: { in: ["seller", "admin"] } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, name: true },
+  });
+  const byName = sellers.find(
+    (s) => s.name.trim().toLowerCase() === choice.label.trim().toLowerCase()
+  );
+  if (byName) return byName.id;
+
+  const idx = Number(choice.key) - 1;
+  if (Number.isInteger(idx) && idx >= 0 && sellers[idx]) return sellers[idx].id;
+  return null;
+}
+
 export async function handleMenuChoice(contactId: string, raw: string) {
   const flow = await getFlow();
   const options = asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS;
@@ -403,11 +400,19 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     return;
   }
 
-  if (choice.action === "agent" && choice.userId) {
-    await offerToAgent({ contactId, userId: choice.userId });
+  if (choice.action === "agent") {
+    const userId = await resolveAgentUserId(choice);
     const contact = await prisma.whatsAppContact.findUniqueOrThrow({
       where: { id: contactId },
     });
+    if (!userId) {
+      await botSend(
+        contact.phone,
+        "Este atendente ainda não está configurado. Digite 4 para fila sem preferência, ou fale com o administrador."
+      );
+      return;
+    }
+    await offerToAgent({ contactId, userId });
     const msg =
       "Perfeito! Encaminhamos você para o atendente escolhido. Em breve ele irá te responder.";
     const externalId = await botSend(contact.phone, msg);
@@ -662,12 +667,25 @@ type ContactStatusFilter =
   | "awaiting_rating"
   | "closed";
 
-/** Lista o que o usuário pode ver (sellers veem histórico closed). */
+function sellerScope(sellerId: string, opts?: { includeOpenQueue?: boolean }) {
+  return {
+    OR: [
+      { assignedToId: sellerId },
+      { status: "waiting" as const, offeredToId: sellerId, openToAll: false },
+      ...(opts?.includeOpenQueue === false
+        ? []
+        : [{ status: "waiting" as const, openToAll: true }]),
+    ],
+  };
+}
+
+/** Lista o que o usuário pode ver. Seller: só as dele. Admin: todas ou por vendedor. */
 export async function listContactsForUser(opts: {
   userId: string;
   role: "admin" | "seller";
   status?: string;
   search?: string;
+  sellerId?: string;
 }) {
   await expireStaleOffers();
 
@@ -694,10 +712,10 @@ export async function listContactsForUser(opts: {
   } as const;
 
   if (opts.role === "admin") {
+    const sellerFilter = opts.sellerId ? sellerScope(opts.sellerId, { includeOpenQueue: false }) : {};
     return prisma.whatsAppContact.findMany({
       where: {
-        ...statusFilter,
-        ...baseSearch,
+        AND: [baseSearch, statusFilter, sellerFilter],
       },
       orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
       include,
@@ -706,19 +724,7 @@ export async function listContactsForUser(opts: {
 
   return prisma.whatsAppContact.findMany({
     where: {
-      AND: [
-        baseSearch,
-        statusFilter,
-        {
-          OR: [
-            { status: "human", assignedToId: opts.userId },
-            { status: "awaiting_rating", assignedToId: opts.userId },
-            { status: "waiting", offeredToId: opts.userId, openToAll: false },
-            { status: "waiting", openToAll: true },
-            { status: "closed", assignedToId: opts.userId },
-          ],
-        },
-      ],
+      AND: [baseSearch, statusFilter, sellerScope(opts.userId, { includeOpenQueue: true })],
     },
     orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
     include,

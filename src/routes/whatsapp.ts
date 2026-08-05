@@ -188,6 +188,10 @@ whatsappRouter.get("/contacts", async (req, res) => {
       role: req.user!.role,
       status: typeof req.query.status === "string" ? req.query.status : undefined,
       search: typeof req.query.search === "string" ? req.query.search : undefined,
+      sellerId:
+        req.user!.role === "admin" && typeof req.query.sellerId === "string"
+          ? req.query.sellerId
+          : undefined,
     });
     res.json(contacts);
   } catch (err) {
