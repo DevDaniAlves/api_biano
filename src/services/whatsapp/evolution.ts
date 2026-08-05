@@ -114,8 +114,21 @@ export class EvolutionClient {
       number,
       text,
     });
-    if (!r.ok) console.error("[evolution] sendText", instance, number, r.status, r.text.slice(0, 300));
-    else console.log("[evolution] sendText", instance, number, "ok");
+    if (!r.ok) {
+      console.error("[evolution] sendText", instance, number, r.status, r.text.slice(0, 300));
+    } else {
+      const d = r.data && typeof r.data === "object" ? (r.data as Record<string, unknown>) : {};
+      console.log(
+        "[evolution] sendText",
+        instance,
+        number,
+        "ok",
+        "status=",
+        d.status ?? d.messageStatus ?? "-",
+        "id=",
+        EvolutionClient.extractMessageId(r.data) ?? "-"
+      );
+    }
     return r;
   }
 

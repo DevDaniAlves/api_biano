@@ -55,6 +55,20 @@ export function buildMenuText(welcome: string, options: FlowOption[]): string {
   return `${welcome}\n\n${lines.join("\n")}`;
 }
 
+async function optionsWithNames(options: FlowOption[]): Promise<FlowOption[]> {
+  const ids = [...new Set(options.map((o) => o.userId).filter(Boolean))] as string[];
+  if (!ids.length) return options;
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(users.map((u) => [u.id, u.name.trim()]));
+  return options.map((o) => {
+    const name = o.userId ? nameById.get(o.userId) : "";
+    return name ? { ...o, label: name } : o;
+  });
+}
+
 async function botSend(
   contact: { phone: string; remoteJid?: string | null },
   text: string
@@ -164,7 +178,9 @@ export async function sendSellersMenu(contactId: string) {
     where: { id: contactId },
   });
   const flow = await getFlow();
-  const options = asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS;
+  const options = await optionsWithNames(
+    asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS
+  );
   const text = buildMenuText(flow.welcomeMessage, options);
   const externalId = await botSend(contact, text);
   await persistBotOut(
@@ -393,7 +409,9 @@ async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
 
 export async function handleMenuChoice(contactId: string, raw: string) {
   const flow = await getFlow();
-  const options = asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS;
+  const options = await optionsWithNames(
+    asOptions(flow.options).length ? asOptions(flow.options) : DEFAULT_OPTIONS
+  );
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 2);
   const choice = options.find((o) => o.key === key);
   if (!choice) {
