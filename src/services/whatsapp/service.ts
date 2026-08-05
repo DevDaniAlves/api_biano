@@ -1010,20 +1010,29 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   }
 
   if (!fromMe) {
-    await prisma.whatsAppMessage.create({
-      data: {
-        contactId: contact.id,
-        externalId: externalId || null,
-        direction: "in",
-        type,
-        body,
-        mediaUrl,
-        quotedExternalId: quote.stanzaId,
-        quotedBody: quote.preview,
-        quotedType: quote.quotedType,
-        quotedMediaUrl: quote.quotedMediaUrl,
-      },
-    });
+    try {
+      await prisma.whatsAppMessage.create({
+        data: {
+          contactId: contact.id,
+          externalId: externalId || null,
+          direction: "in",
+          type,
+          body,
+          mediaUrl,
+          quotedExternalId: quote.stanzaId,
+          quotedBody: quote.preview,
+          quotedType: quote.quotedType,
+          quotedMediaUrl: quote.quotedMediaUrl,
+        },
+      });
+    } catch (err) {
+      // Dois Evolution / webhook duplicado
+      if ((err as { code?: string })?.code === "P2002" && externalId) {
+        console.warn("[webhook] dup ignorado", phone, externalId);
+        return;
+      }
+      throw err;
+    }
 
     const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contact.id } });
     const preview = (body ?? "[mensagem]").slice(0, 120);
