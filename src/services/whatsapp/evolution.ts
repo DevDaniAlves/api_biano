@@ -267,17 +267,28 @@ export class EvolutionClient {
     fromMe: boolean;
     id: string;
     message?: Record<string, unknown>;
+    data?: Record<string, unknown>;
   }) {
     const instance = await this.resolveInstance();
     if (!instance) {
       return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
     }
-    return this.req("POST", `/chat/getBase64FromMediaMessage/${encodeURIComponent(instance)}`, {
-      message: {
-        key: { remoteJid: opts.remoteJid, fromMe: opts.fromMe, id: opts.id },
-        ...(opts.message ? { message: opts.message } : {}),
+    const path = `/chat/getBase64FromMediaMessage/${encodeURIComponent(instance)}`;
+    const attempts: unknown[] = [
+      {
+        message: {
+          key: { remoteJid: opts.remoteJid, fromMe: opts.fromMe, id: opts.id },
+          ...(opts.message ? { message: opts.message } : {}),
+        },
       },
-    });
+    ];
+    if (opts.data) attempts.push({ message: opts.data });
+    let last = { ok: false, status: 0, data: null as unknown, text: "" };
+    for (const body of attempts) {
+      last = await this.req("POST", path, body);
+      if (last.ok && EvolutionClient.extractMediaBase64(last.data)) return last;
+    }
+    return last;
   }
 
   static extractMediaBase64(data: unknown): { base64: string; mimetype?: string } | null {
@@ -286,12 +297,16 @@ export class EvolutionClient {
     if (typeof data !== "object") return null;
     const o = data as Record<string, unknown>;
     const nested = o.data && typeof o.data === "object" ? (o.data as Record<string, unknown>) : null;
-    const b64 = o.base64 ?? nested?.base64;
-    if (typeof b64 === "string" && b64.length > 80) {
-      return {
-        base64: b64,
-        mimetype: String(o.mimetype ?? o.mimeType ?? nested?.mimetype ?? "") || undefined,
-      };
+    const msg = o.message && typeof o.message === "object" ? (o.message as Record<string, unknown>) : null;
+    const bags = [o, nested, msg].filter(Boolean) as Record<string, unknown>[];
+    for (const bag of bags) {
+      const b64 = bag.base64 ?? bag.base64Data;
+      if (typeof b64 === "string" && b64.length > 80) {
+        return {
+          base64: b64,
+          mimetype: String(bag.mimetype ?? bag.mimeType ?? o.mimetype ?? nested?.mimetype ?? "") || undefined,
+        };
+      }
     }
     return null;
   }

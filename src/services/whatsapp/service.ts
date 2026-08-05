@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
@@ -15,8 +14,7 @@ import {
 } from "./flow.js";
 import { assumeMetricStart } from "./schedule.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const UPLOADS_DIR = path.resolve(__dirname, "../../../uploads");
+export const UPLOADS_DIR = path.resolve(env.UPLOADS_DIR || path.join(process.cwd(), "uploads"));
 
 export { listContactsForUser, assumeOnOpen, expireStaleRatings };
 
@@ -44,6 +42,19 @@ function mimeExt(mimetype?: string | null, type?: string, fileName?: string | nu
   return "jpg";
 }
 
+function saveBuffer(
+  buf: Buffer,
+  mimetype?: string | null,
+  type?: string,
+  fileName?: string | null
+) {
+  if (buf.length < 40) return null;
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${mimeExt(mimetype, type, fileName)}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, name), buf);
+  return `/uploads/${name}`;
+}
+
 function saveBase64Media(
   b64: string,
   mimetype?: string | null,
@@ -51,12 +62,35 @@ function saveBase64Media(
   fileName?: string | null
 ) {
   const raw = b64.replace(/^data:[^;]+;base64,/, "");
-  const buf = Buffer.from(raw, "base64");
-  if (buf.length < 40) return null;
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${mimeExt(mimetype, type, fileName)}`;
-  fs.writeFileSync(path.join(UPLOADS_DIR, name), buf);
-  return `/uploads/${name}`;
+  return saveBuffer(Buffer.from(raw, "base64"), mimetype, type, fileName);
+}
+
+function localFileName(url: string) {
+  const name = url.replace(/^\/uploads\//, "").split("?")[0];
+  if (!name || name.includes("..") || name.includes("/") || name.includes("\\")) return null;
+  return name;
+}
+
+function localUploadExists(url?: string | null) {
+  if (!url?.startsWith("/uploads/")) return false;
+  const name = localFileName(url);
+  if (!name) return false;
+  try {
+    return fs.statSync(path.join(UPLOADS_DIR, name)).size > 40;
+  } catch {
+    return false;
+  }
+}
+
+async function saveRemoteUrl(url: string, type: string, fileName?: string | null) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    return saveBuffer(buf, res.headers.get("content-type"), type, fileName);
+  } catch {
+    return null;
+  }
 }
 
 function unwrapWaMessage(message: Record<string, unknown>): Record<string, unknown> {
@@ -103,24 +137,82 @@ function quotePreviewFromMessage(quoted: Record<string, unknown> | null | undefi
   return null;
 }
 
-function extractQuote(message: Record<string, unknown>, data: Record<string, unknown>) {
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const t = value.trim();
+  if (!t.startsWith("{") && !t.startsWith("[")) return value;
+  try {
+    return JSON.parse(t);
+  } catch {
+    return value;
+  }
+}
+
+function quotedKind(quoted: Record<string, unknown> | null | undefined) {
+  if (!quoted) return null;
+  const q = unwrapWaMessage(quoted);
+  if (q.imageMessage) return "image";
+  if (q.stickerMessage) return "sticker";
+  if (q.videoMessage) return "video";
+  if (q.audioMessage || q.pttMessage) return "audio";
+  if (q.documentMessage) return "document";
+  return "text";
+}
+
+function saveQuoteThumb(quoted: Record<string, unknown> | null | undefined) {
+  if (!quoted) return null;
+  const q = unwrapWaMessage(quoted);
+  const node = (q.imageMessage || q.stickerMessage || q.videoMessage || {}) as {
+    jpegThumbnail?: unknown;
+  };
+  const thumb = node.jpegThumbnail;
+  if (!thumb) return null;
+  if (typeof thumb === "string" && thumb.length > 40) {
+    return saveBase64Media(thumb, "image/jpeg", "image");
+  }
+  if (thumb && typeof thumb === "object") {
+    const bufLike = thumb as { type?: string; data?: number[] };
+    if (Array.isArray(bufLike.data)) return saveBuffer(Buffer.from(bufLike.data), "image/jpeg", "image");
+  }
+  if (Array.isArray(thumb)) return saveBuffer(Buffer.from(thumb as number[]), "image/jpeg", "image");
+  return null;
+}
+
+type QuoteInfo = {
+  stanzaId: string | null;
+  preview: string | null;
+  quotedType: string | null;
+  quotedMediaUrl: string | null;
+};
+
+function extractQuote(message: Record<string, unknown>, data: Record<string, unknown>): QuoteInfo {
   const skip = new Set([
     "deviceListMetadata",
     "messageSecret",
     "jpegThumbnail",
     "thumbnailDirectPath",
     "mediaKey",
+    "waveform",
   ]);
-  function walk(node: unknown, depth: number): { stanzaId: string | null; preview: string | null } | null {
+  function walk(node: unknown, depth: number): QuoteInfo | null {
+    node = parseMaybeJson(node);
     if (!node || typeof node !== "object" || depth > 8) return null;
     if (ArrayBuffer.isView(node)) return null;
     const o = node as Record<string, unknown>;
-    const stanzaId = String(o.stanzaId ?? o.stanzaID ?? o.quotedStanzaID ?? "").trim();
-    const quoted =
-      (o.quotedMessage as Record<string, unknown> | undefined) ||
-      (o.quotedMsg as Record<string, unknown> | undefined);
-    const preview = quotePreviewFromMessage(quoted);
-    if (stanzaId || preview) return { stanzaId: stanzaId || null, preview };
+    const stanzaId = String(o.stanzaId ?? o.stanzaID ?? o.quotedStanzaID ?? o.quotedId ?? "").trim();
+    const quoted = parseMaybeJson(o.quotedMessage ?? o.quotedMsg ?? o.quoted) as
+      | Record<string, unknown>
+      | undefined;
+    const quotedObj = quoted && typeof quoted === "object" && !Array.isArray(quoted) ? quoted : undefined;
+    const preview = quotePreviewFromMessage(quotedObj);
+    if (stanzaId || preview) {
+      return {
+        stanzaId: stanzaId || null,
+        preview,
+        quotedType: quotedKind(quotedObj),
+        quotedMediaUrl: saveQuoteThumb(quotedObj),
+      };
+    }
     for (const [k, v] of Object.entries(o)) {
       if (skip.has(k) || v == null || typeof v !== "object") continue;
       const found = walk(v, depth + 1);
@@ -128,10 +220,22 @@ function extractQuote(message: Record<string, unknown>, data: Record<string, unk
     }
     return null;
   }
-  return walk({ message, data, contextInfo: data.contextInfo }, 0) ?? {
-    stanzaId: null as string | null,
-    preview: null as string | null,
-  };
+  return (
+    walk(
+      {
+        message,
+        data,
+        contextInfo: parseMaybeJson(data.contextInfo),
+        quoted: data.quoted,
+      },
+      0
+    ) ?? {
+      stanzaId: null,
+      preview: null,
+      quotedType: null,
+      quotedMediaUrl: null,
+    }
+  );
 }
 
 async function resolveMediaFile(opts: {
@@ -159,6 +263,7 @@ async function resolveMediaFile(opts: {
       fromMe: opts.fromMe,
       id: opts.externalId,
       message: opts.message,
+      data: opts.data,
     });
     const extracted = EvolutionClient.extractMediaBase64(r.data);
     if (extracted) {
@@ -169,7 +274,11 @@ async function resolveMediaFile(opts: {
     }
   }
   const url = opts.fallbackUrl || "";
-  if (url && !url.includes("whatsapp.net") && !url.includes("mmg.")) return url;
+  if (url.startsWith("http")) {
+    const saved = await saveRemoteUrl(url, opts.type, opts.fileName);
+    if (saved) return saved;
+  }
+  if (url.startsWith("/uploads/") && localUploadExists(url)) return url;
   return null;
 }
 
@@ -206,15 +315,13 @@ async function upsertOutboundMessage(opts: {
       },
     });
     if (byExt) {
-      if (opts.sentById && !byExt.sentById) {
-        return prisma.whatsAppMessage.update({
-          where: { id: byExt.id },
-          data: {
-            sentById: opts.sentById,
-            ...(opts.mediaUrl && !byExt.mediaUrl ? { mediaUrl: opts.mediaUrl } : {}),
-            ...(opts.body && !byExt.body ? { body: opts.body } : {}),
-          },
-        });
+      const data = {
+        ...(opts.sentById && !byExt.sentById ? { sentById: opts.sentById } : {}),
+        ...(opts.mediaUrl && !localUploadExists(byExt.mediaUrl) ? { mediaUrl: opts.mediaUrl } : {}),
+        ...(opts.body && !byExt.body ? { body: opts.body } : {}),
+      };
+      if (Object.keys(data).length) {
+        return prisma.whatsAppMessage.update({ where: { id: byExt.id }, data });
       }
       return byExt;
     }
@@ -237,7 +344,7 @@ async function upsertOutboundMessage(opts: {
       data: {
         ...(opts.externalId && !recent.externalId ? { externalId: opts.externalId } : {}),
         ...(opts.sentById && !recent.sentById ? { sentById: opts.sentById } : {}),
-        ...(opts.mediaUrl && !recent.mediaUrl ? { mediaUrl: opts.mediaUrl } : {}),
+        ...(opts.mediaUrl && !localUploadExists(recent.mediaUrl) ? { mediaUrl: opts.mediaUrl } : {}),
       },
     });
   }
@@ -304,14 +411,122 @@ export async function listMessages(
     orderBy: { createdAt: "asc" },
     include: { sentBy: { select: { id: true, name: true } } },
   });
+  const missing = messages.filter(
+    (m) =>
+      ["image", "video", "sticker", "audio", "document"].includes(m.type) &&
+      !localUploadExists(m.mediaUrl)
+  );
+  if (missing.length) {
+    const chunk = missing.slice(-12);
+    const updated = await Promise.all(chunk.map((m) => hydrateMessageMedia(m, contact)));
+    const byId = new Map(updated.map((u) => [u.id, u]));
+    for (let i = 0; i < messages.length; i++) {
+      const next = byId.get(messages[i].id);
+      if (next) messages[i] = next as typeof messages[number];
+    }
+  }
   return {
     contact: {
       ...contact,
       ...contactFlags(contact),
     },
-    messages,
+    messages: withQuotedPayload(messages, contact.name || contact.phone),
     readOnly: contact.status === "closed" || contact.status === "awaiting_rating",
   };
+}
+
+function withQuotedPayload<
+  T extends {
+    id: string;
+    direction: string;
+    type: string;
+    body: string | null;
+    mediaUrl: string | null;
+    externalId: string | null;
+    quotedExternalId: string | null;
+    quotedBody: string | null;
+    quotedType: string | null;
+    quotedMediaUrl: string | null;
+    sentBy?: { id: string; name: string } | null;
+  },
+>(messages: T[], contactName: string) {
+  return messages.map((m) => {
+    const target = m.quotedExternalId
+      ? messages.find((x) => {
+          if (x.id === m.quotedExternalId) return true;
+          const a = x.externalId || "";
+          const b = m.quotedExternalId || "";
+          return Boolean(a && b && (a === b || a.endsWith(b) || b.endsWith(a)));
+        })
+      : null;
+    if (!target && !m.quotedBody && !m.quotedMediaUrl && !m.quotedExternalId) {
+      return { ...m, quoted: null };
+    }
+    return {
+      ...m,
+      quoted: {
+        messageId: target?.id ?? null,
+        type: target?.type || m.quotedType || "text",
+        body: target?.body ?? m.quotedBody,
+        mediaUrl: target?.mediaUrl ?? m.quotedMediaUrl,
+        author:
+          target?.direction === "out"
+            ? target.sentBy?.name || "Você"
+            : contactName,
+      },
+    };
+  });
+}
+
+const mediaRetryAt = new Map<string, number>();
+
+async function hydrateMessageMedia<
+  T extends {
+    id: string;
+    type: string;
+    direction: string;
+    externalId: string | null;
+    mediaUrl: string | null;
+  },
+>(msg: T, contact: { phone: string; remoteJid: string | null }): Promise<T> {
+  if (localUploadExists(msg.mediaUrl)) return msg;
+  const last = mediaRetryAt.get(msg.id) ?? 0;
+  if (Date.now() - last < 45_000) return msg;
+  mediaRetryAt.set(msg.id, Date.now());
+
+  async function persist(url: string) {
+    await prisma.whatsAppMessage.update({ where: { id: msg.id }, data: { mediaUrl: url } });
+    return { ...msg, mediaUrl: url };
+  }
+
+  if (
+    msg.mediaUrl?.startsWith("http") &&
+    !msg.mediaUrl.includes("whatsapp.net") &&
+    !msg.mediaUrl.includes("mmg.")
+  ) {
+    const saved = await saveRemoteUrl(msg.mediaUrl, msg.type);
+    if (saved) return persist(saved);
+  }
+
+  if (msg.externalId && evolution.enabled) {
+    const r = await evolution.getBase64FromMedia({
+      remoteJid: contact.remoteJid || `${contact.phone}@s.whatsapp.net`,
+      fromMe: msg.direction === "out",
+      id: msg.externalId,
+    });
+    const extracted = EvolutionClient.extractMediaBase64(r.data);
+    if (extracted) {
+      const saved = saveBase64Media(extracted.base64, extracted.mimetype, msg.type);
+      if (saved) return persist(saved);
+    }
+  }
+
+  if (msg.mediaUrl?.startsWith("http")) {
+    const saved = await saveRemoteUrl(msg.mediaUrl, msg.type);
+    if (saved) return persist(saved);
+  }
+
+  return msg;
 }
 
 async function sellerPrefix(userId: string, body: string) {
@@ -635,7 +850,12 @@ async function handleRatingReply(contactId: string, body: string | null) {
 
 /** Webhook Evolution MESSAGES_UPSERT */
 export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
-  const data = (payload.data ?? payload) as Record<string, unknown>;
+  let data = (payload.data ?? payload) as Record<string, unknown> | unknown[];
+  if (Array.isArray(data)) data = (data[0] ?? {}) as Record<string, unknown>;
+  if (data && typeof data === "object" && Array.isArray((data as { messages?: unknown[] }).messages)) {
+    data = (((data as { messages: unknown[] }).messages[0] ?? data) as Record<string, unknown>);
+  }
+  data = data as Record<string, unknown>;
   const key = (data.key ?? {}) as Record<string, unknown>;
   const fromMe = Boolean(key.fromMe);
   const ident = EvolutionClient.identityFromKey(key, data);
@@ -754,12 +974,18 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
       where: { contactId_externalId: { contactId: contact.id, externalId } },
     });
     if (dup) {
-      if ((!dup.quotedBody && quote.preview) || (!dup.quotedExternalId && quote.stanzaId)) {
+      if (
+        (!dup.quotedBody && quote.preview) ||
+        (!dup.quotedExternalId && quote.stanzaId) ||
+        (!dup.quotedMediaUrl && quote.quotedMediaUrl)
+      ) {
         await prisma.whatsAppMessage.update({
           where: { id: dup.id },
           data: {
             quotedExternalId: quote.stanzaId ?? dup.quotedExternalId,
             quotedBody: quote.preview ?? dup.quotedBody,
+            quotedType: quote.quotedType ?? dup.quotedType,
+            quotedMediaUrl: quote.quotedMediaUrl ?? dup.quotedMediaUrl,
           },
         });
       }
@@ -794,6 +1020,8 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
         mediaUrl,
         quotedExternalId: quote.stanzaId,
         quotedBody: quote.preview,
+        quotedType: quote.quotedType,
+        quotedMediaUrl: quote.quotedMediaUrl,
       },
     });
 
@@ -879,12 +1107,13 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
   }
 
   if (recentOut) {
-    if (externalId && !recentOut.externalId) {
+    const data = {
+      ...(externalId && !recentOut.externalId ? { externalId } : {}),
+      ...(mediaUrl && !localUploadExists(recentOut.mediaUrl) ? { mediaUrl } : {}),
+    };
+    if (Object.keys(data).length) {
       try {
-        await prisma.whatsAppMessage.update({
-          where: { id: recentOut.id },
-          data: { externalId },
-        });
+        await prisma.whatsAppMessage.update({ where: { id: recentOut.id }, data });
       } catch {
         /* unique race */
       }
@@ -902,6 +1131,8 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
       mediaUrl,
       quotedExternalId: quote.stanzaId,
       quotedBody: quote.preview,
+      quotedType: quote.quotedType,
+      quotedMediaUrl: quote.quotedMediaUrl,
     },
   });
 }

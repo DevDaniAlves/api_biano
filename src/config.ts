@@ -36,6 +36,8 @@ const schema = z.object({
   DISPATCH_DELAY_MS: z.coerce.number().default(2000),
   JWT_SECRET: z.string().default("calangus-dev-secret-change-me"),
   API_PUBLIC_URL: z.string().default("http://localhost:3333"),
+  /** Pasta persistente de mídia. No Railway, monte um Volume em /data e use /data/uploads. */
+  UPLOADS_DIR: z.string().optional(),
   RATING_TIMEOUT_MINUTES: z.coerce.number().default(5),
   INACTIVITY_WARN_MINUTES: z.coerce.number().default(10),
   INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(15),

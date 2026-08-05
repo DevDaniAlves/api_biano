@@ -236,6 +236,8 @@ model WhatsAppMessage {
   mediaUrl         String?
   quotedExternalId String?
   quotedBody       String?
+  quotedType       String?
+  quotedMediaUrl   String?
   sentById         String?
   sentBy           User?            @relation(fields: [sentById], references: [id], onDelete: SetNull)
   createdAt        DateTime         @default(now())

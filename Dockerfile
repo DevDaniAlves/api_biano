@@ -14,8 +14,9 @@ COPY . .
 ENV NODE_ENV=production
 ENV HEADLESS=true
 ENV PORT=3333
+ENV UPLOADS_DIR=/data/uploads
 
-RUN mkdir -p tmp/downloads tmp/screenshots uploads
+RUN mkdir -p tmp/downloads tmp/screenshots /data/uploads
 
 EXPOSE 3333
 
