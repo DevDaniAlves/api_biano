@@ -34,6 +34,8 @@ const schema = z.object({
     .string()
     .default("http://calangusmoda.crediario.digital/login"),
   DISPATCH_DELAY_MS: z.coerce.number().default(2000),
+  /** Delay “digitando…” antes do bot enviar (ms). Antes era 2–7s e gerava toque duplo no menu. */
+  BOT_TYPING_DELAY_MS: z.coerce.number().default(400),
   JWT_SECRET: z.string().default("calangus-dev-secret-change-me"),
   API_PUBLIC_URL: z.string().default("http://localhost:3333"),
   /** Pasta persistente de mídia. No Railway, monte um Volume em /data e use /data/uploads. */

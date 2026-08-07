@@ -115,21 +115,6 @@ whatsappRouter.post("/webhook/evolution", async (req, res) => {
         : message.extendedTextMessage && typeof message.extendedTextMessage === "object"
           ? String((message.extendedTextMessage as { text?: string }).text ?? "")
           : null;
-    // DEBUG citação: payload completo (base64 longo cortado para não estourar log)
-    try {
-      const dump = JSON.stringify(body, (_k, v) => {
-        if (typeof v === "string" && v.length > 240) {
-          return `[string ${v.length} chars] ${v.slice(0, 80)}…`;
-        }
-        if (v && typeof v === "object" && !Array.isArray(v) && Buffer.isBuffer(v)) {
-          return `[Buffer ${(v as Buffer).length}]`;
-        }
-        return v;
-      });
-      console.log("[webhook] RAW", dump);
-    } catch (e) {
-      console.log("[webhook] RAW (falha stringify)", e);
-    }
     recordWebhookHit({
       path: "/whatsapp/webhook/evolution",
       method: "POST",
@@ -138,15 +123,12 @@ whatsappRouter.post("/webhook/evolution", async (req, res) => {
       from: key.remoteJid ? String(key.remoteJid) : null,
       preview,
     });
-    try {
-      await handleEvolutionWebhook(body);
-    } catch (err) {
-      console.error("[webhook]", err);
-    }
+    // ACK imediato — Evolution não espera o bot terminar (evita fila/atraso).
     res.json({ ok: true });
+    void handleEvolutionWebhook(body).catch((err) => console.error("[webhook]", err));
   } catch (err) {
     console.error("[webhook]", err);
-    res.json({ ok: true });
+    if (!res.headersSent) res.json({ ok: true });
   }
 });
 

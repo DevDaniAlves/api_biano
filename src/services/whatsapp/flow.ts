@@ -89,7 +89,54 @@ function sleep(ms: number) {
 }
 
 function botDelayMs() {
-  return 2000 + Math.floor(Math.random() * 5001);
+  const base = Math.max(0, env.BOT_TYPING_DELAY_MS);
+  // Jitter leve (±150ms) só para não parecer robô; sem o antigo 2–7s.
+  const jitter = base > 0 ? Math.floor(Math.random() * 151) : 0;
+  return base + jitter;
+}
+
+/** Fila serial por contato — evita 2 webhooks processarem menu ao mesmo tempo. */
+const contactLocks = new Map<string, Promise<unknown>>();
+
+export async function withContactLock<T>(contactId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = contactLocks.get(contactId) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  contactLocks.set(
+    contactId,
+    run.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return run;
+}
+
+/**
+ * Após 1 (departamento) → menu vendedores, o usuário costuma reenviar o mesmo
+ * dígito porque a resposta atrasou. Ignora esse eco por alguns segundos.
+ */
+const echoDigitUntil = new Map<string, { digit: string; until: number }>();
+
+function markMenuEchoGuard(contactId: string, digit: string, ms = 8000) {
+  echoDigitUntil.set(contactId, { digit, until: Date.now() + ms });
+}
+
+function shouldIgnoreEchoDigit(contactId: string, raw: string | null): boolean {
+  if (!raw) return false;
+  const digit = raw.trim().replace(/[^\d]/g, "").slice(0, 2);
+  if (!digit) return false;
+  const g = echoDigitUntil.get(contactId);
+  if (!g) return false;
+  if (Date.now() > g.until) {
+    echoDigitUntil.delete(contactId);
+    return false;
+  }
+  if (g.digit === digit) {
+    echoDigitUntil.delete(contactId);
+    console.log("[bot] ignore eco dígito", digit, contactId);
+    return true;
+  }
+  return false;
 }
 
 function isTransientEvolutionError(status: number, text: string) {
@@ -479,32 +526,50 @@ export async function offerFromQueue(contactId: string, queueId: string) {
 
 export async function handleDepartmentChoice(contactId: string, raw: string) {
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 1);
+
+  if (key !== "1" && key !== "2") {
+    const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+      where: { id: contactId },
+    });
+    await botSend(contact, "Opção inválida.\n\n" + DEPT_MENU);
+    return;
+  }
+
+  // Claim atômico do passo departamento (evita 2 webhooks processarem o mesmo "1"/"2").
+  const claimed = await prisma.whatsAppContact.updateMany({
+    where: { id: contactId, status: "bot", botMenuStep: "department" },
+    data: { botMenuStep: "sellers" },
+  });
+  if (claimed.count === 0) {
+    console.log("[bot] departamento já consumido, skip", contactId, key);
+    return;
+  }
+
+  markMenuEchoGuard(contactId, key);
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
 
   if (key === "1") {
-    // Atendimento → menu vendedores
     await sendSellersMenu(contactId);
     return;
   }
 
-  if (key === "2") {
-    // Financeiro → fila (sem escolha de vendedor)
-    const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
-    if (!queue) {
-      await botSend(contact, "No momento não há fila configurada. Aguarde um momento.");
-      return;
-    }
-    await offerFromQueue(contactId, queue.id);
-    const msg =
-      "Certo! Encaminhamos você para o setor Financeiro. Em breve um atendente irá te responder.";
-    const externalId = await botSend(contact, msg);
-    await persistIfSent(contactId, msg, undefined, externalId);
+  // Financeiro → fila (sem menu de vendedores)
+  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!queue) {
+    await prisma.whatsAppContact.update({
+      where: { id: contactId },
+      data: { botMenuStep: "department" },
+    });
+    await botSend(contact, "No momento não há fila configurada. Aguarde um momento.");
     return;
   }
-
-  await botSend(contact, "Opção inválida.\n\n" + DEPT_MENU);
+  await offerFromQueue(contactId, queue.id);
+  const msg =
+    "Certo! Encaminhamos você para o setor Financeiro. Em breve um atendente irá te responder.";
+  const externalId = await botSend(contact, msg);
+  await persistIfSent(contactId, msg, undefined, externalId);
 }
 
 async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
@@ -624,47 +689,51 @@ export async function handleOutsideHours(contactId: string) {
 }
 
 export async function processInboundBot(contactId: string, body: string | null, isNew: boolean) {
-  const existing = await prisma.whatsAppContact.findUniqueOrThrow({
-    where: { id: contactId },
-  });
-  if (existing.webhookPaused) return;
+  return withContactLock(contactId, async () => {
+    const existing = await prisma.whatsAppContact.findUniqueOrThrow({
+      where: { id: contactId },
+    });
+    if (existing.webhookPaused) return;
 
-  if (!isBusinessHours()) {
-    if (existing.status === "waiting" && existing.openToAll) {
-      return;
-    }
-    await handleOutsideHours(contactId);
-    return;
-  }
-
-  const contact = existing;
-
-  // Catálogo: keyword pula departamento → menu vendedores
-  if ((isNew || contact.status === "closed" || contact.status === "bot") && isCatalogKeyword(body)) {
-    await sendSellersMenu(contactId);
-    return;
-  }
-
-  if (isNew || contact.status === "closed") {
-    await sendDepartmentMenu(contactId);
-    return;
-  }
-
-  if (contact.status === "bot") {
-    if (body && /^\s*\d+/.test(body)) {
-      if (contact.botMenuStep === "department") {
-        await handleDepartmentChoice(contactId, body);
+    if (!isBusinessHours()) {
+      if (existing.status === "waiting" && existing.openToAll) {
         return;
       }
-      await handleMenuChoice(contactId, body);
+      await handleOutsideHours(contactId);
       return;
     }
-    if (contact.botMenuStep === "sellers") {
+
+    const contact = existing;
+
+    if (shouldIgnoreEchoDigit(contactId, body)) return;
+
+    // Catálogo: keyword pula departamento → menu vendedores
+    if ((isNew || contact.status === "closed" || contact.status === "bot") && isCatalogKeyword(body)) {
       await sendSellersMenu(contactId);
-    } else {
-      await sendDepartmentMenu(contactId);
+      return;
     }
-  }
+
+    if (isNew || contact.status === "closed") {
+      await sendDepartmentMenu(contactId);
+      return;
+    }
+
+    if (contact.status === "bot") {
+      if (body && /^\s*\d+/.test(body)) {
+        if (contact.botMenuStep === "department") {
+          await handleDepartmentChoice(contactId, body);
+          return;
+        }
+        await handleMenuChoice(contactId, body);
+        return;
+      }
+      if (contact.botMenuStep === "sellers") {
+        await sendSellersMenu(contactId);
+      } else {
+        await sendDepartmentMenu(contactId);
+      }
+    }
+  });
 }
 
 /** Expira ofertas > 10 min → openToAll */
