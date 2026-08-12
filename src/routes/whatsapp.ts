@@ -136,6 +136,83 @@ whatsappRouter.get("/webhook/status", (_req, res) => {
   res.json(webhookStatusPayload());
 });
 
+/**
+ * Redirect URI do Cadastro incorporado hospedado pela Meta (OAuth).
+ * Colar na Meta: {API_PUBLIC_URL}/whatsapp/meta/embedded-signup
+ * Ex.: https://sua-api.up.railway.app/whatsapp/meta/embedded-signup
+ */
+whatsappRouter.get("/meta/embedded-signup", (req, res) => {
+  const q = req.query as Record<string, unknown>;
+  const params: Record<string, string> = {};
+  for (const [k, v] of Object.entries(q)) {
+    if (v == null) continue;
+    params[k] = Array.isArray(v) ? v.map(String).join(",") : String(v);
+  }
+
+  console.log("[meta/embedded-signup] callback", params);
+
+  const error = params.error || params.error_message || "";
+  const code = params.code || "";
+  const state = params.state || "";
+  const wantsJson =
+    req.query.format === "json" ||
+    String(req.headers.accept || "").includes("application/json");
+
+  if (wantsJson) {
+    res.json({
+      ok: !error,
+      error: error || null,
+      code: code || null,
+      state: state || null,
+      params,
+      hint: "Troque o code por access_token via Graph API (client_id + client_secret).",
+    });
+    return;
+  }
+
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  const rows = Object.entries(params)
+    .map(([k, v]) => `<tr><th>${esc(k)}</th><td><code>${esc(v)}</code></td></tr>`)
+    .join("");
+
+  res.type("html").send(`<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meta Embedded Signup — BIANO</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: #111; }
+    .ok { color: #0a7; } .err { color: #c00; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    th { width: 30%; color: #555; }
+    code { word-break: break-all; font-size: 0.85rem; }
+    .box { background: #f6f6f6; padding: 1rem; border-radius: 8px; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1 class="${error ? "err" : "ok"}">${error ? "Cadastro incompleto / erro" : "Cadastro incorporado — retorno OK"}</h1>
+  <p>Callback do <strong>Cadastro incorporado hospedado pela Meta</strong> no BIANO.</p>
+  ${
+    error
+      ? `<div class="box err"><strong>Erro:</strong> ${esc(error)}</div>`
+      : code
+        ? `<div class="box ok"><strong>Code recebido.</strong> Guarde este retorno e use no exchange do token (Graph API).</div>`
+        : `<div class="box">Nenhum <code>code</code> na URL. Se o fluxo Meta terminou, confira se o redirect URI está idêntico ao cadastrado.</div>`
+  }
+  <table>
+    <tbody>
+      ${rows || "<tr><td colspan='2'>Sem query params</td></tr>"}
+    </tbody>
+  </table>
+  <p style="margin-top:1.5rem;color:#666;font-size:0.9rem">URL desta rota: <code>/whatsapp/meta/embedded-signup</code></p>
+</body>
+</html>`);
+});
+
 whatsappRouter.use(authRequired);
 
 whatsappRouter.get("/push/vapid-public", (_req, res) => {
