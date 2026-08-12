@@ -2,7 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
-import { evolution, EvolutionClient } from "./evolution.js";
+import { messagingEnabled, sendOutbound } from "./gateway.js";
 import {
   BUSINESS,
   isBusinessHours,
@@ -159,8 +159,8 @@ async function botSend(
     console.warn("[bot] webhook pausado, skip send:", contact.phone);
     return null;
   }
-  if (!evolution.enabled) {
-    console.warn("[bot] Evolution off, skip send:", text.slice(0, 80));
+  if (!(await messagingEnabled())) {
+    console.warn("[bot] WhatsApp off, skip send:", text.slice(0, 80));
     return null;
   }
 
@@ -176,17 +176,31 @@ async function botSend(
     }
   }
 
-  let r = await evolution.sendText(contact.remoteJid || contact.phone, text);
-  if (!r.ok && isTransientEvolutionError(r.status, r.text)) {
+  let r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "bot",
+    contactId: contact.id ?? null,
+    kind: "text",
+    text,
+    category: "service",
+  });
+  if (!r.ok && r.provider === "evolution" && isTransientEvolutionError(0, r.error || "")) {
     await sleep(1500);
-    r = await evolution.sendText(contact.remoteJid || contact.phone, text);
+    r = await sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "bot",
+      contactId: contact.id ?? null,
+      kind: "text",
+      text,
+      category: "service",
+    });
   }
   if (!r.ok) {
-    console.error("[bot] falha ao enviar WhatsApp", r.status, (r.text || "").slice(0, 300));
+    console.error("[bot] falha ao enviar WhatsApp", r.error);
     return null;
   }
   console.log("[bot] enviado:", text.replace(/\s+/g, " ").slice(0, 80));
-  return EvolutionClient.extractMessageId(r.data);
+  return r.externalId;
 }
 
 async function persistIfSent(
@@ -195,7 +209,7 @@ async function persistIfSent(
   extra: Prisma.WhatsAppContactUpdateInput | undefined,
   externalId: string | null
 ) {
-  if (!externalId && evolution.enabled) return;
+  if (!externalId && (await messagingEnabled())) return;
   await persistBotOut(contactId, text, extra, externalId);
 }
 

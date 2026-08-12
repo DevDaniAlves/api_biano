@@ -246,6 +246,36 @@ model WhatsAppMessage {
   @@index([contactId, createdAt])
 }
 
+/** Auditoria de envio (custo Meta out/2026): boleto, bot, agente, sistema. */
+model WhatsAppSendLog {
+  id           String    @id @default(cuid())
+  provider     String
+  source       String
+  direction    String    @default("out")
+  phone        String
+  externalId   String?
+  kind         String    @default("text")
+  templateName String?
+  category     String?
+  pricingType  String?
+  billable     Boolean   @default(false)
+  status       String    @default("queued")
+  error        String?
+  contactId    String?
+  boletoId     String?
+  bodyPreview  String?
+  createdAt    DateTime  @default(now())
+  deliveredAt  DateTime?
+
+  @@index([createdAt])
+  @@index([provider, createdAt])
+  @@index([category, createdAt])
+  @@index([source, createdAt])
+  @@index([externalId])
+  @@index([boletoId])
+  @@index([contactId])
+}
+
 /** Fluxo/menu do bot (singleton lógico — um registro). */
 model WhatsAppFlow {
   id              String   @id @default("default")
@@ -257,14 +287,18 @@ model WhatsAppFlow {
   updatedAt       DateTime @updatedAt
 }
 
-/** Instância Evolution conectada via UI (singleton). */
+/** Instância Evolution + provider Meta (singleton). */
 model WhatsAppConnection {
-  id              String   @id @default("default")
-  instanceName    String   @default("")
-  status          String   @default("disconnected")
-  lastQr          String?
-  lastPairingCode String?
-  updatedAt       DateTime @updatedAt
+  id                 String   @id @default("default")
+  instanceName       String   @default("")
+  status             String   @default("disconnected")
+  lastQr             String?
+  lastPairingCode    String?
+  /** evolution | meta — sobrescreve WHATSAPP_PROVIDER do .env quando setado. */
+  provider           String   @default("evolution")
+  metaPhoneNumberId  String?
+  metaWabaId         String?
+  updatedAt          DateTime @updatedAt
 }
 
 model Product {

@@ -2,6 +2,7 @@ import type { Boleto } from "@prisma/client";
 import { env } from "../config.js";
 import { prisma } from "../db.js";
 import type { CsvBoletoRow } from "./csv.js";
+import { activeProvider, sendOutbound } from "./whatsapp/gateway.js";
 import { evolution } from "./whatsapp/evolution.js";
 
 export async function upsertBoletosFromCsv(
@@ -95,24 +96,69 @@ function formatBrDate(ymd: string): string {
   return `${m[3]}/${m[2]}/${m[1]}`;
 }
 
-async function sendWhatsApp(phone: string, text: string): Promise<{ ok: boolean; error?: string }> {
-  if (!evolution.enabled) {
-    return { ok: false, error: "Evolution não configurada (WHATSAPP_API_URL / WHATSAPP_API_KEY)" };
+async function sendWhatsApp(
+  phone: string,
+  text: string,
+  boleto: Boleto
+): Promise<{ ok: boolean; error?: string }> {
+  const number = phone.replace(/\D/g, "");
+  if (number.length < 12) return { ok: false, error: `Telefone inválido: ${phone}` };
+
+  const provider = await activeProvider();
+  if (provider === "meta") {
+    const templateName = (env.META_BOLETO_TEMPLATE_NAME || "").trim();
+    if (!templateName) {
+      return {
+        ok: false,
+        error: "META_BOLETO_TEMPLATE_NAME não configurado (template Utility aprovado)",
+      };
+    }
+    const valorFmt = boleto.valorVencimento.toLocaleString("pt-BR", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const r = await sendOutbound({
+      to: number,
+      source: "boleto",
+      boletoId: boleto.id,
+      kind: "template",
+      category: "utility",
+      billable: true,
+      bodyPreview: text,
+      template: {
+        name: templateName,
+        language: env.META_BOLETO_TEMPLATE_LANG,
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: firstName(boleto.clienteNome) },
+              { type: "text", text: valorFmt },
+              { type: "text", text: formatBrDate(boleto.vencimento) },
+              { type: "text", text: env.CREDIARIO_CLIENTE_LINK },
+            ],
+          },
+        ],
+      },
+    });
+    return { ok: r.ok, error: r.error };
   }
+
   const instance = await evolution.resolveInstance();
   if (!instance) {
     return { ok: false, error: "WhatsApp não conectado. Conecte pelo QR em Conectar." };
   }
-  const number = phone.replace(/\D/g, "");
-  if (number.length < 12) return { ok: false, error: `Telefone inválido: ${phone}` };
-
-  console.log(`[whatsapp] sendText instance=${instance} number=${number} textLen=${text.length}`);
-  const r = await evolution.sendText(phone, text);
-  console.log(`[whatsapp] status=${r.status} body=${r.text.slice(0, 500)}`);
-  if (!r.ok) {
-    return { ok: false, error: `HTTP ${r.status}: ${r.text.slice(0, 500)}` };
-  }
-  return { ok: true };
+  const r = await sendOutbound({
+    to: phone,
+    source: "boleto",
+    boletoId: boleto.id,
+    kind: "text",
+    text,
+    category: "free",
+    billable: false,
+    bodyPreview: text,
+  });
+  return { ok: r.ok, error: r.error };
 }
 
 function sleep(ms: number) {
@@ -170,9 +216,10 @@ export async function dispatchPending(vencimento?: string) {
     let failed = 0;
     let skipped = 0;
 
-    const instance = await evolution.resolveInstance();
+    const provider = await activeProvider();
+    const instance = provider === "evolution" ? await evolution.resolveInstance() : "";
     console.log(
-      `[dispatch] início: ${boletos.length} pending | url=${env.WHATSAPP_API_URL} | instance=${instance || "(QR não conectado)"} | override=${env.WHATSAPP_OVERRIDE_PHONE ?? "-"}`
+      `[dispatch] início: ${boletos.length} pending | provider=${provider} | instance=${instance || "-"} | override=${env.WHATSAPP_OVERRIDE_PHONE ?? "-"}`
     );
 
     for (let i = 0; i < boletos.length; i++) {
@@ -197,7 +244,7 @@ export async function dispatchPending(vencimento?: string) {
         `[dispatch] #${b.id} ${b.clienteNome} → ${phone}` +
           (env.WHATSAPP_OVERRIDE_PHONE ? " (override)" : "")
       );
-      const result = await sendWhatsApp(phone, text);
+      const result = await sendWhatsApp(phone, text, b);
 
       if (result.ok) {
         console.log(`[dispatch] OK #${b.id}`);

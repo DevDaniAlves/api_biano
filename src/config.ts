@@ -17,6 +17,21 @@ const schema = z.object({
     .transform((v) => v !== "false" && v !== "0"),
   WHATSAPP_API_URL: z.string().optional(),
   WHATSAPP_API_KEY: z.string().optional(),
+  /** evolution | meta — transporte ativo de envio/recebimento. */
+  WHATSAPP_PROVIDER: z.enum(["evolution", "meta"]).default("evolution"),
+  META_APP_ID: z.string().optional(),
+  META_APP_SECRET: z.string().optional(),
+  META_ACCESS_TOKEN: z.string().optional(),
+  META_PHONE_NUMBER_ID: z.string().optional(),
+  META_WABA_ID: z.string().optional(),
+  META_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
+  /** Config ID do Cadastro incorporado (Embedded Signup). */
+  META_EMBEDDED_CONFIG_ID: z.string().optional(),
+  /** Nome do template Utility aprovado para disparo de boletos. */
+  META_BOLETO_TEMPLATE_NAME: z.string().optional(),
+  META_BOLETO_TEMPLATE_LANG: z.string().default("pt_BR"),
+  /** Estimativa R$/msg faturável até rate card oficial set/2026. */
+  META_ESTIMATED_BRL_PER_MSG: z.coerce.number().default(0.05),
   /** Número comercial para wa.me (DDI+DDD+número). */
   WHATSAPP_BUSINESS_PHONE: z.string().optional(),
   /** Keyword no wa.me que pula menu departamento → vendedores. */

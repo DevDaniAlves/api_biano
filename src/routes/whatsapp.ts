@@ -17,6 +17,9 @@ import {
   webhookStatusPayload,
 } from "../services/whatsapp/webhook-hits.js";
 import { evolution, EvolutionClient } from "../services/whatsapp/evolution.js";
+import { activeProvider } from "../services/whatsapp/gateway.js";
+import { meta } from "../services/whatsapp/meta.js";
+import { getWhatsAppUsage, handleMetaWebhook } from "../services/whatsapp/meta-webhook.js";
 import {
   deletePushSubscription,
   getVapidPublicKey,
@@ -136,10 +139,41 @@ whatsappRouter.get("/webhook/status", (_req, res) => {
   res.json(webhookStatusPayload());
 });
 
+/** Meta Cloud API — verificação do webhook. */
+whatsappRouter.get("/webhook/meta", (req, res) => {
+  const mode = String(req.query["hub.mode"] ?? "");
+  const token = String(req.query["hub.verify_token"] ?? "");
+  const challenge = String(req.query["hub.challenge"] ?? "");
+  const expected = (env.META_WEBHOOK_VERIFY_TOKEN || "").trim();
+  if (mode === "subscribe" && expected && token === expected) {
+    res.status(200).send(challenge);
+    return;
+  }
+  res.sendStatus(403);
+});
+
+whatsappRouter.post("/webhook/meta", async (req, res) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    recordWebhookHit({
+      path: "/whatsapp/webhook/meta",
+      method: "POST",
+      ip: req.ip,
+      event: String(body.object ?? "whatsapp_business_account"),
+      from: null,
+      preview: null,
+    });
+    res.sendStatus(200);
+    void handleMetaWebhook(body).catch((err) => console.error("[webhook/meta]", err));
+  } catch (err) {
+    console.error("[webhook/meta]", err);
+    if (!res.headersSent) res.sendStatus(200);
+  }
+});
+
 /**
  * Redirect URI do Cadastro incorporado hospedado pela Meta (OAuth).
  * Colar na Meta: {API_PUBLIC_URL}/whatsapp/meta/embedded-signup
- * Ex.: https://sua-api.up.railway.app/whatsapp/meta/embedded-signup
  */
 whatsappRouter.get("/meta/embedded-signup", (req, res) => {
   const q = req.query as Record<string, unknown>;
@@ -214,6 +248,145 @@ whatsappRouter.get("/meta/embedded-signup", (req, res) => {
 });
 
 whatsappRouter.use(authRequired);
+
+function webPublicOrigin() {
+  const origins = env.CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+  const https = origins.find((o) => o.startsWith("https://"));
+  return https || origins[0] || "http://localhost:5173";
+}
+
+function buildEmbeddedSignupUrl() {
+  const appId = (env.META_APP_ID || "").trim();
+  const configId = (env.META_EMBEDDED_CONFIG_ID || "").trim();
+  if (!appId || !configId) return null;
+  const redirect = `${webPublicOrigin().replace(/\/+$/, "")}/whatsapp/meta/callback`;
+  const extras = encodeURIComponent(
+    JSON.stringify({
+      version: "v4",
+      sessionInfoVersion: "3",
+      featureType: "whatsapp_business_app_onboarding",
+    })
+  );
+  return `https://business.facebook.com/messaging/whatsapp/onboard/?app_id=${encodeURIComponent(appId)}&config_id=${encodeURIComponent(configId)}&extras=${extras}&redirect_uri=${encodeURIComponent(redirect)}`;
+}
+
+whatsappRouter.get("/meta/status", async (_req, res) => {
+  try {
+    const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+    const provider = await activeProvider();
+    const phoneNumberId =
+      (row?.metaPhoneNumberId || "").trim() || (env.META_PHONE_NUMBER_ID || "").trim() || null;
+    const wabaId = (row?.metaWabaId || "").trim() || (env.META_WABA_ID || "").trim() || null;
+    res.json({
+      provider,
+      configured: Boolean(env.META_ACCESS_TOKEN && phoneNumberId),
+      hasAccessToken: Boolean(env.META_ACCESS_TOKEN),
+      phoneNumberId,
+      wabaId,
+      appId: env.META_APP_ID || null,
+      embeddedConfigId: env.META_EMBEDDED_CONFIG_ID || null,
+      embeddedSignupUrl: buildEmbeddedSignupUrl(),
+      webhookPath: "/whatsapp/webhook/meta",
+      boletoTemplate: env.META_BOLETO_TEMPLATE_NAME || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/meta/provider", async (req, res) => {
+  try {
+    const provider = String(req.body?.provider ?? "").trim().toLowerCase();
+    if (provider !== "meta" && provider !== "evolution") {
+      res.status(400).json({ error: "provider deve ser meta ou evolution" });
+      return;
+    }
+    if (provider === "meta" && !env.META_ACCESS_TOKEN) {
+      res.status(400).json({
+        error: "Meta não configurada (META_ACCESS_TOKEN no .env)",
+      });
+      return;
+    }
+    const row = await prisma.whatsAppConnection.upsert({
+      where: { id: "default" },
+      create: { id: "default", provider },
+      update: { provider },
+    });
+    res.json({ ok: true, provider: row.provider });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/meta/exchange", async (req, res) => {
+  try {
+    const code = String(req.body?.code ?? "").trim();
+    if (!code) {
+      res.status(400).json({ error: "code obrigatório" });
+      return;
+    }
+    const phoneNumberId = req.body?.phoneNumberId
+      ? String(req.body.phoneNumberId).trim()
+      : "";
+    const wabaId = req.body?.wabaId ? String(req.body.wabaId).trim() : "";
+
+    const exchanged = await meta.exchangeCode(code);
+    if (phoneNumberId || wabaId) {
+      await prisma.whatsAppConnection.upsert({
+        where: { id: "default" },
+        create: {
+          id: "default",
+          metaPhoneNumberId: phoneNumberId || null,
+          metaWabaId: wabaId || null,
+        },
+        update: {
+          ...(phoneNumberId ? { metaPhoneNumberId: phoneNumberId } : {}),
+          ...(wabaId ? { metaWabaId: wabaId } : {}),
+        },
+      });
+    }
+
+    if (!exchanged.ok) {
+      res.status(400).json({
+        ok: false,
+        error: exchanged.error,
+        savedIds: Boolean(phoneNumberId || wabaId),
+        hint: "Token permanente: use Usuário do sistema no Business Manager e cole META_ACCESS_TOKEN no .env",
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      accessTokenReceived: Boolean(exchanged.accessToken),
+      savedIds: Boolean(phoneNumberId || wabaId),
+      hint: exchanged.accessToken
+        ? "Cole o access_token em META_ACCESS_TOKEN no .env (ou use token de system user)."
+        : "Code trocado; confirme o token no .env.",
+      // Não devolvemos o token completo na resposta por segurança em logs de proxy —
+      // mas o admin precisa ver. Prefixo curto:
+      tokenPreview: exchanged.accessToken
+        ? `${exchanged.accessToken.slice(0, 12)}…`
+        : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/usage", async (req, res) => {
+  try {
+    const from = req.query.from ? new Date(String(req.query.from)) : undefined;
+    const to = req.query.to ? new Date(String(req.query.to)) : undefined;
+    const data = await getWhatsAppUsage({
+      from: from && !Number.isNaN(from.getTime()) ? from : undefined,
+      to: to && !Number.isNaN(to.getTime()) ? to : undefined,
+    });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
 
 whatsappRouter.get("/push/vapid-public", (_req, res) => {
   const key = getVapidPublicKey();

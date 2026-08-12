@@ -5,6 +5,7 @@ import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 import { evolution, EvolutionClient } from "./evolution.js";
+import { messagingEnabled, sendOutbound } from "./gateway.js";
 import {
   assumeOnOpen,
   expireStaleRatings,
@@ -554,13 +555,20 @@ export async function sendTextMessage(opts: {
     await assumeOnOpen(opts.contactId, opts.userId, role);
   }
 
-  if (!evolution.enabled) throw new Error("Evolution não configurada");
+  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution ou Meta)");
 
   const text = await sellerPrefix(opts.userId, opts.body);
-  const r = await evolution.sendText(contact.remoteJid || contact.phone, text);
-  if (!r.ok) throw new Error(`Falha Evolution: ${r.status}`);
+  const r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "agent",
+    contactId: contact.id,
+    kind: "text",
+    text,
+    category: "service",
+  });
+  if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
 
-  const externalId = EvolutionClient.extractMessageId(r.data);
+  const externalId = r.externalId;
   const msg = await upsertOutboundMessage({
     contactId: contact.id,
     type: "text",
@@ -603,7 +611,7 @@ export async function sendImageMessage(opts: {
   if (!alreadyMine && role !== "admin") {
     await assumeOnOpen(opts.contactId, opts.userId, role);
   }
-  if (!evolution.enabled) throw new Error("Evolution não configurada");
+  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution ou Meta)");
 
   const mediatype = opts.mediatype ?? "image";
   const fallback =
@@ -625,30 +633,25 @@ export async function sendImageMessage(opts: {
   const b64 = buf.toString("base64");
   const to = contact.remoteJid || contact.phone;
 
-  let r =
-    mediatype === "audio"
-      ? await evolution.sendWhatsAppAudio({ phone: to, audio: b64 })
-      : await evolution.sendMedia({
-          phone: to,
-          media: b64,
-          mimetype: opts.mimetype,
-          caption,
-          fileName: opts.fileName,
-          mediatype,
-        });
-  if (!r.ok && mediatype === "audio") {
-    r = await evolution.sendMedia({
-      phone: to,
-      media: b64,
-      mimetype: opts.mimetype || "audio/ogg; codecs=opus",
-      caption: "",
-      fileName: opts.fileName || "audio.ogg",
-      mediatype: "audio",
-    });
-  }
-  if (!r.ok) throw new Error(`Falha Evolution mídia: ${r.status} ${r.text.slice(0, 200)}`);
+  const r = await sendOutbound({
+    to,
+    source: "agent",
+    contactId: contact.id,
+    kind: mediatype === "audio" ? "audio" : "media",
+    category: "service",
+    bodyPreview: caption || fallback,
+    media: {
+      mediatype,
+      link: opts.publicUrl || undefined,
+      base64: b64,
+      mimetype: opts.mimetype,
+      caption,
+      fileName: opts.fileName,
+    },
+  });
+  if (!r.ok) throw new Error(`Falha WhatsApp mídia: ${r.error}`);
 
-  const externalId = EvolutionClient.extractMessageId(r.data);
+  const externalId = r.externalId;
   const body = mediatype === "audio" ? fallback : caption || fallback;
   const msg = await upsertOutboundMessage({
     contactId: contact.id,
@@ -734,9 +737,16 @@ export async function resolveContact(contactId: string) {
   }
 
   let externalId: string | null = null;
-  if (evolution.enabled) {
-    const r = await evolution.sendText(contact.remoteJid || contact.phone, RATING_MSG);
-    externalId = EvolutionClient.extractMessageId(r.data);
+  if (await messagingEnabled()) {
+    const r = await sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "system",
+      contactId,
+      kind: "text",
+      text: RATING_MSG,
+      category: "service",
+    });
+    externalId = r.externalId;
   }
 
   await upsertOutboundMessage({
@@ -774,18 +784,25 @@ export async function warnInactivity(contactId: string, userId: string) {
       `Cliente inativo há menos de ${env.INACTIVITY_WARN_MINUTES} minutos`
     );
   }
-  if (!evolution.enabled) throw new Error("Evolution não configurada");
+  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado");
 
   const text = await sellerPrefix(userId, INACTIVITY_MSG);
-  const r = await evolution.sendText(contact.remoteJid || contact.phone, text);
-  if (!r.ok) throw new Error(`Falha Evolution: ${r.status}`);
+  const r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "agent",
+    contactId,
+    kind: "text",
+    text,
+    category: "service",
+  });
+  if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
 
   await upsertOutboundMessage({
     contactId,
     type: "text",
     body: text,
     sentById: userId,
-    externalId: EvolutionClient.extractMessageId(r.data),
+    externalId: r.externalId,
   });
 
   return prisma.whatsAppContact.update({
@@ -806,9 +823,16 @@ async function handleRatingReply(contactId: string, body: string | null) {
     });
     const hint = "Por favor, responda apenas com um número de *1* a *5*.";
     let externalId: string | null = null;
-    if (evolution.enabled) {
-      const r = await evolution.sendText(contact.remoteJid || contact.phone, hint);
-      externalId = EvolutionClient.extractMessageId(r.data);
+    if (await messagingEnabled()) {
+      const r = await sendOutbound({
+        to: contact.remoteJid || contact.phone,
+        source: "system",
+        contactId,
+        kind: "text",
+        text: hint,
+        category: "service",
+      });
+      externalId = r.externalId;
     }
     await upsertOutboundMessage({
       contactId,
@@ -825,9 +849,16 @@ async function handleRatingReply(contactId: string, body: string | null) {
     where: { id: contactId },
   });
   let externalId: string | null = null;
-  if (evolution.enabled) {
-    const r = await evolution.sendText(contact.remoteJid || contact.phone, thanks);
-    externalId = EvolutionClient.extractMessageId(r.data);
+  if (await messagingEnabled()) {
+    const r = await sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "system",
+      contactId,
+      kind: "text",
+      text: thanks,
+      category: "service",
+    });
+    externalId = r.externalId;
   }
   await upsertOutboundMessage({
     contactId,
