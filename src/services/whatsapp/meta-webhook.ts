@@ -1,7 +1,91 @@
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { applyMetaStatus } from "./gateway.js";
+import { MetaClient } from "./meta.js";
 import { processInboundBot } from "./flow.js";
+
+/** BR: Meta manda wa_id com 12 dígitos; envio usa 13 com 9º — unificar no contato canônico. */
+function brPhoneVariants(raw: string): { canonical: string; alt: string | null } {
+  const canonical = MetaClient.toNumber(raw);
+  const digits = raw.replace(/\D/g, "");
+  if (!canonical) return { canonical: digits, alt: null };
+  let alt: string | null = null;
+  if (canonical.startsWith("55") && canonical.length === 13 && canonical[4] === "9") {
+    alt = `${canonical.slice(0, 4)}${canonical.slice(5)}`;
+  } else if (digits.startsWith("55") && digits.length === 12) {
+    alt = digits;
+  }
+  if (alt === canonical) alt = null;
+  return { canonical, alt };
+}
+
+async function resolveMetaContact(opts: {
+  phone: string;
+  profileName?: string | null;
+  preview: string;
+}) {
+  const { canonical, alt } = brPhoneVariants(opts.phone);
+  if (!canonical) return { contact: null as null, isNew: false };
+
+  let contact = await prisma.whatsAppContact.findUnique({ where: { phone: canonical } });
+  const altRow =
+    !contact && alt
+      ? await prisma.whatsAppContact.findUnique({ where: { phone: alt } })
+      : alt && contact
+        ? await prisma.whatsAppContact.findUnique({ where: { phone: alt } })
+        : null;
+
+  // Inbound antigo no 12 dígitos + conversa do agente no 13 → fundir no canônico.
+  if (contact && altRow && altRow.id !== contact.id) {
+    const dupes = await prisma.whatsAppMessage.findMany({
+      where: { contactId: altRow.id },
+      select: { id: true, externalId: true },
+    });
+    for (const m of dupes) {
+      if (m.externalId) {
+        const exists = await prisma.whatsAppMessage.findUnique({
+          where: {
+            contactId_externalId: { contactId: contact.id, externalId: m.externalId },
+          },
+        });
+        if (exists) {
+          await prisma.whatsAppMessage.delete({ where: { id: m.id } });
+          continue;
+        }
+      }
+      await prisma.whatsAppMessage.update({
+        where: { id: m.id },
+        data: { contactId: contact.id },
+      });
+    }
+    await prisma.whatsAppContact.delete({ where: { id: altRow.id } }).catch(() => undefined);
+  } else if (!contact && altRow) {
+    contact = await prisma.whatsAppContact.update({
+      where: { id: altRow.id },
+      data: { phone: canonical },
+    });
+  }
+
+  const isNew = !contact;
+  if (!contact) {
+    contact = await prisma.whatsAppContact.create({
+      data: {
+        phone: canonical,
+        name: opts.profileName || canonical,
+        status: "bot",
+        lastMessageAt: new Date(),
+        lastMessagePreview: opts.preview.slice(0, 120),
+      },
+    });
+  } else if (opts.profileName && (!contact.name || contact.name === contact.phone)) {
+    contact = await prisma.whatsAppContact.update({
+      where: { id: contact.id },
+      data: { name: opts.profileName },
+    });
+  }
+
+  return { contact, isNew };
+}
 
 async function upsertInboundText(opts: {
   phone: string;
@@ -9,27 +93,12 @@ async function upsertInboundText(opts: {
   externalId: string;
   profileName?: string | null;
 }) {
-  const phone = opts.phone.replace(/\D/g, "");
-  if (!phone) return;
-
-  let contact = await prisma.whatsAppContact.findUnique({ where: { phone } });
-  const isNew = !contact;
-  if (!contact) {
-    contact = await prisma.whatsAppContact.create({
-      data: {
-        phone,
-        name: opts.profileName || phone,
-        status: "bot",
-        lastMessageAt: new Date(),
-        lastMessagePreview: opts.body.slice(0, 120),
-      },
-    });
-  } else if (opts.profileName && (!contact.name || contact.name === contact.phone)) {
-    await prisma.whatsAppContact.update({
-      where: { id: contact.id },
-      data: { name: opts.profileName },
-    });
-  }
+  const { contact, isNew } = await resolveMetaContact({
+    phone: opts.phone,
+    profileName: opts.profileName,
+    preview: opts.body,
+  });
+  if (!contact) return;
 
   if (opts.externalId) {
     const existing = await prisma.whatsAppMessage.findUnique({
