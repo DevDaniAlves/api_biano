@@ -30,8 +30,16 @@ export class MetaClient {
     };
   }
 
+  /**
+   * Normaliza E.164 só dígitos.
+   * BR: wa_id às vezes vem sem o 9º dígito (12 chars) → Meta allow list espera 13 (55+DDD+9+8).
+   */
   static toNumber(phone: string) {
-    return phone.replace(/\D/g, "");
+    let n = phone.replace(/\D/g, "");
+    if (n.startsWith("55") && n.length === 12) {
+      n = `${n.slice(0, 4)}9${n.slice(4)}`;
+    }
+    return n;
   }
 
   static extractMessageId(data: unknown): string | null {

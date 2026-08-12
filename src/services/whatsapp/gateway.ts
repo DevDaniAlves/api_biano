@@ -65,7 +65,8 @@ export async function sendOutbound(opts: {
   bodyPreview?: string | null;
 }): Promise<OutboundResult> {
   const provider = await activeProvider();
-  const phone = (opts.to.includes("@") ? opts.to.split("@")[0] : opts.to).replace(/\D/g, "");
+  const rawPhone = (opts.to.includes("@") ? opts.to.split("@")[0] : opts.to).replace(/\D/g, "");
+  const phone = provider === "meta" ? MetaClient.toNumber(rawPhone) : rawPhone;
   const kind: SendKind =
     opts.kind ??
     (opts.template
