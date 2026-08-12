@@ -155,13 +155,37 @@ whatsappRouter.get("/webhook/meta", (req, res) => {
 whatsappRouter.post("/webhook/meta", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
+    const entry0 = Array.isArray(body.entry) ? (body.entry[0] as Record<string, unknown>) : null;
+    const change0 =
+      entry0 && Array.isArray(entry0.changes)
+        ? (entry0.changes[0] as { value?: Record<string, unknown> })
+        : null;
+    const value = change0?.value ?? {};
+    const msg0 = Array.isArray(value.messages)
+      ? (value.messages[0] as Record<string, unknown>)
+      : null;
+    const st0 = Array.isArray(value.statuses)
+      ? (value.statuses[0] as Record<string, unknown>)
+      : null;
+    const from = msg0
+      ? String(msg0.from ?? "")
+      : st0
+        ? String(st0.recipient_id ?? "")
+        : null;
+    const preview = msg0
+      ? msg0.text && typeof msg0.text === "object"
+        ? String((msg0.text as { body?: string }).body ?? `[${String(msg0.type ?? "msg")}]`)
+        : `[${String(msg0.type ?? "msg")}]`
+      : st0
+        ? `status=${String(st0.status ?? "")}`
+        : null;
     recordWebhookHit({
       path: "/whatsapp/webhook/meta",
       method: "POST",
       ip: req.ip,
-      event: String(body.object ?? "whatsapp_business_account"),
-      from: null,
-      preview: null,
+      event: msg0 ? "messages" : st0 ? "statuses" : String(body.object ?? "whatsapp_business_account"),
+      from: from || null,
+      preview,
     });
     res.sendStatus(200);
     void handleMetaWebhook(body).catch((err) => console.error("[webhook/meta]", err));
