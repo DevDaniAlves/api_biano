@@ -10,6 +10,16 @@ export type MetaSendResult = {
   text: string;
 };
 
+export type MetaMessageTemplate = {
+  id: string;
+  name: string;
+  status: string;
+  language: string;
+  category: string;
+  rejectedReason?: string | null;
+  components?: unknown[];
+};
+
 export class MetaClient {
   get enabled() {
     return Boolean(env.META_ACCESS_TOKEN);
@@ -23,11 +33,136 @@ export class MetaClient {
     return (env.META_PHONE_NUMBER_ID ?? "").trim();
   }
 
+  async resolveWabaId(): Promise<string> {
+    const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+    const fromDb = (row?.metaWabaId || "").trim();
+    if (fromDb) return fromDb;
+    return (env.META_WABA_ID ?? "").trim();
+  }
+
   private headers() {
     return {
       Authorization: `Bearer ${env.META_ACCESS_TOKEN}`,
       "Content-Type": "application/json",
     };
+  }
+
+  private async graph(
+    method: string,
+    path: string,
+    body?: Record<string, unknown>
+  ): Promise<MetaSendResult> {
+    if (!env.META_ACCESS_TOKEN) {
+      return { ok: false, status: 0, data: null, text: "Meta não configurada (META_ACCESS_TOKEN)" };
+    }
+    const res = await fetch(`${GRAPH}${path}`, {
+      method,
+      headers: this.headers(),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text().catch(() => "");
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    if (!res.ok) console.error("[meta]", method, path, res.status, text.slice(0, 400));
+    return { ok: res.ok, status: res.status, data, text };
+  }
+
+  async listMessageTemplates() {
+    const wabaId = await this.resolveWabaId();
+    if (!wabaId) {
+      return {
+        ok: false as const,
+        status: 0,
+        data: null,
+        text: "META_WABA_ID / metaWabaId ausente",
+        templates: [] as MetaMessageTemplate[],
+      };
+    }
+    const r = await this.graph(
+      "GET",
+      `/${encodeURIComponent(wabaId)}/message_templates?limit=100&fields=name,status,language,category,components,id,rejected_reason`
+    );
+    const templates: MetaMessageTemplate[] = [];
+    if (r.data && typeof r.data === "object") {
+      const list = (r.data as { data?: unknown[] }).data;
+      if (Array.isArray(list)) {
+        for (const row of list) {
+          if (!row || typeof row !== "object") continue;
+          const t = row as Record<string, unknown>;
+          templates.push({
+            id: String(t.id ?? ""),
+            name: String(t.name ?? ""),
+            status: String(t.status ?? ""),
+            language: String(t.language ?? ""),
+            category: String(t.category ?? ""),
+            rejectedReason: t.rejected_reason ? String(t.rejected_reason) : null,
+            components: Array.isArray(t.components) ? t.components : [],
+          });
+        }
+      }
+    }
+    return { ...r, templates };
+  }
+
+  async createMessageTemplate(opts: {
+    name: string;
+    language?: string;
+    category?: "UTILITY" | "MARKETING" | "AUTHENTICATION";
+    bodyText: string;
+    bodyExamples: string[];
+  }) {
+    const wabaId = await this.resolveWabaId();
+    if (!wabaId) {
+      return {
+        ok: false as const,
+        status: 0,
+        data: null,
+        text: "META_WABA_ID / metaWabaId ausente",
+      };
+    }
+    const name = opts.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    const language = (opts.language || env.META_BOLETO_TEMPLATE_LANG || "pt_BR").trim();
+    const category = opts.category || "UTILITY";
+    const bodyText = opts.bodyText.trim();
+    if (!name || !bodyText) {
+      return { ok: false as const, status: 0, data: null, text: "name e bodyText obrigatórios" };
+    }
+    return this.graph("POST", `/${encodeURIComponent(wabaId)}/message_templates`, {
+      name,
+      language,
+      category,
+      components: [
+        {
+          type: "BODY",
+          text: bodyText,
+          example: { body_text: [opts.bodyExamples.length ? opts.bodyExamples : ["exemplo"]] },
+        },
+      ],
+    });
+  }
+
+  async deleteMessageTemplate(name: string) {
+    const wabaId = await this.resolveWabaId();
+    if (!wabaId) {
+      return {
+        ok: false as const,
+        status: 0,
+        data: null,
+        text: "META_WABA_ID / metaWabaId ausente",
+      };
+    }
+    const n = name.trim();
+    if (!n) {
+      return { ok: false as const, status: 0, data: null, text: "name obrigatório" };
+    }
+    return this.graph(
+      "DELETE",
+      `/${encodeURIComponent(wabaId)}/message_templates?name=${encodeURIComponent(n)}`
+    );
   }
 
   /**

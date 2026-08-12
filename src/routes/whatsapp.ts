@@ -311,8 +311,107 @@ whatsappRouter.get("/meta/status", async (_req, res) => {
       embeddedConfigId: env.META_EMBEDDED_CONFIG_ID || null,
       embeddedSignupUrl: buildEmbeddedSignupUrl(),
       webhookPath: "/whatsapp/webhook/meta",
+      webhookUrl: `${env.API_PUBLIC_URL.replace(/\/+$/, "")}/whatsapp/webhook/meta`,
+      webhookVerifyTokenSet: Boolean((env.META_WEBHOOK_VERIFY_TOKEN || "").trim()),
       boletoTemplate: env.META_BOLETO_TEMPLATE_NAME || null,
+      boletoTemplateLang: env.META_BOLETO_TEMPLATE_LANG || "pt_BR",
     });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+const DEFAULT_BOLETO_BODY =
+  "Olá {{1}}, tudo bem?\n\nPassando para lembrar que sua parcela de R$ {{2}} vence em {{3}}.\n\nPara consultar e pagar, acesse:\n{{4}}\n\nCaso já tenha efetuado o pagamento, por favor desconsidere esta mensagem.\n\nCalangus Moda Jovem";
+
+whatsappRouter.get("/meta/templates", async (_req, res) => {
+  try {
+    if (!meta.enabled) {
+      res.status(400).json({ error: "Meta não configurada" });
+      return;
+    }
+    const r = await meta.listMessageTemplates();
+    if (!r.ok) {
+      res.status(r.status || 400).json({ error: r.text.slice(0, 500), templates: [] });
+      return;
+    }
+    res.json({
+      templates: r.templates,
+      defaultBoleto: {
+        name: env.META_BOLETO_TEMPLATE_NAME || "boleto_lembrete",
+        language: env.META_BOLETO_TEMPLATE_LANG || "pt_BR",
+        category: "UTILITY",
+        bodyText: DEFAULT_BOLETO_BODY,
+        bodyExamples: ["Maria", "129,90", "20/08/2026", "https://calangusmoda.crediario.digital/login"],
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/meta/templates", async (req, res) => {
+  try {
+    if (!meta.enabled) {
+      res.status(400).json({ error: "Meta não configurada" });
+      return;
+    }
+    const name = String(req.body?.name ?? "").trim();
+    const bodyText = String(req.body?.bodyText ?? "").trim();
+    const language = String(req.body?.language ?? env.META_BOLETO_TEMPLATE_LANG ?? "pt_BR").trim();
+    const category = String(req.body?.category ?? "UTILITY").trim().toUpperCase() as
+      | "UTILITY"
+      | "MARKETING"
+      | "AUTHENTICATION";
+    const replaceExisting = Boolean(req.body?.replaceExisting);
+    const bodyExamples = Array.isArray(req.body?.bodyExamples)
+      ? (req.body.bodyExamples as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean)
+      : [];
+    if (!name || !bodyText) {
+      res.status(400).json({ error: "name e bodyText obrigatórios" });
+      return;
+    }
+    if (replaceExisting) {
+      const del = await meta.deleteMessageTemplate(name);
+      if (!del.ok && del.status !== 404) {
+        // segue mesmo se não existir; só aborta em erro grave inesperado
+        const msg = del.text.toLowerCase();
+        if (!msg.includes("does not exist") && !msg.includes("not found")) {
+          console.warn("[meta] delete template before recreate", del.status, del.text.slice(0, 200));
+        }
+      }
+    }
+    const r = await meta.createMessageTemplate({
+      name,
+      language,
+      category:
+        category === "MARKETING" || category === "AUTHENTICATION" ? category : "UTILITY",
+      bodyText,
+      bodyExamples,
+    });
+    if (!r.ok) {
+      res.status(r.status || 400).json({ error: r.text.slice(0, 800), data: r.data });
+      return;
+    }
+    res.json({ ok: true, data: r.data });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.delete("/meta/templates/:name", async (req, res) => {
+  try {
+    if (!meta.enabled) {
+      res.status(400).json({ error: "Meta não configurada" });
+      return;
+    }
+    const name = String(req.params.name ?? "").trim();
+    const r = await meta.deleteMessageTemplate(name);
+    if (!r.ok) {
+      res.status(r.status || 400).json({ error: r.text.slice(0, 500), data: r.data });
+      return;
+    }
+    res.json({ ok: true, data: r.data });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
