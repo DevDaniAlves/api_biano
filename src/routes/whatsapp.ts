@@ -322,7 +322,7 @@ whatsappRouter.get("/meta/status", async (_req, res) => {
 });
 
 const DEFAULT_BOLETO_BODY =
-  "Olá {{1}}, tudo bem?\n\nPassando para lembrar que sua parcela de R$ {{2}} vence em {{3}}.\n\nPara consultar e pagar, acesse:\n{{4}}\n\nCaso já tenha efetuado o pagamento, por favor desconsidere esta mensagem.\n\nCalangus Moda Jovem";
+  "Olá {{1}}, tudo bem?\n\nPassando para lembrar que sua parcela de R$ {{2}} vence em {{3}}.\n\nPara consultar e pagar, acesse o link a seguir e entre com CPF e data de nascimento:\n{{4}}\n\nCaso já tenha efetuado o pagamento, por favor desconsidere esta mensagem.\n\nAtenciosamente,\nCalangus Moda Jovem";
 
 whatsappRouter.get("/meta/templates", async (_req, res) => {
   try {

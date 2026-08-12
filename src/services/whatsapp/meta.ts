@@ -131,17 +131,30 @@ export class MetaClient {
     if (!name || !bodyText) {
       return { ok: false as const, status: 0, data: null, text: "name e bodyText obrigatórios" };
     }
+
+    // Variáveis posicionais {{1}}..{{n}} — example.body_text DEVE ser array de arrays.
+    const varIndexes = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((m) => Number(m[1]));
+    const varCount = varIndexes.length ? Math.max(...varIndexes) : 0;
+    const defaults = ["Maria", "129,90", "20/08/2026", "https://calangusmoda.crediario.digital/login"];
+    const examples: string[] = [];
+    for (let i = 0; i < varCount; i++) {
+      examples.push((opts.bodyExamples[i] || defaults[i] || `exemplo${i + 1}`).trim());
+    }
+
+    const bodyComponent: Record<string, unknown> = {
+      type: "BODY",
+      text: bodyText,
+    };
+    if (varCount > 0) {
+      bodyComponent.example = { body_text: [examples] };
+    }
+
     return this.graph("POST", `/${encodeURIComponent(wabaId)}/message_templates`, {
       name,
       language,
       category,
-      components: [
-        {
-          type: "BODY",
-          text: bodyText,
-          example: { body_text: [opts.bodyExamples.length ? opts.bodyExamples : ["exemplo"]] },
-        },
-      ],
+      parameter_format: "positional",
+      components: [bodyComponent],
     });
   }
 
