@@ -1020,21 +1020,13 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
           },
         });
       }
+      // Janela anti-reprocess (60s / recentOut) removida para teste de latência do webhook.
       if (
         !fromMe &&
         !contact.webhookPaused &&
         (contact.status === "bot" || contact.status === "closed")
       ) {
-        const recentOut = await prisma.whatsAppMessage.findFirst({
-          where: {
-            contactId: contact.id,
-            direction: "out",
-            createdAt: { gte: new Date(Date.now() - 60_000) },
-          },
-        });
-        if (!recentOut) {
-          await processInboundBot(contact.id, body, contact.status === "closed" || isNew);
-        }
+        await processInboundBot(contact.id, body, contact.status === "closed" || isNew);
       }
       return;
     }
