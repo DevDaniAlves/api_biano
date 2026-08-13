@@ -669,14 +669,27 @@ export async function handleMenuChoice(contactId: string, raw: string) {
   await persistIfSent(contactId, msg, undefined, externalId);
 }
 
+/** Fora do horário: avisa, sugere o catálogo e deixa na fila aberta. */
+export function buildOutsideHoursMessage(closedMessage: string) {
+  const url = (env.CATALOG_PUBLIC_URL || "").replace(/\/+$/, "").trim();
+  const base = closedMessage.trim();
+  if (!url) return base;
+  if (base.includes(url)) return base;
+  return (
+    `${base}\n\n` +
+    `Enquanto isso, dê uma olhada no nosso *catálogo* e conheça as novidades da Calangus:\n${url}`
+  );
+}
+
 /** Fora do horário: avisa e deixa na fila aberta para depois. */
 export async function handleOutsideHours(contactId: string) {
   const flow = await getFlow();
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const externalId = await botSend(contact, flow.closedMessage);
-  await persistIfSent(contactId, flow.closedMessage, undefined, externalId);
+  const msg = buildOutsideHoursMessage(flow.closedMessage);
+  const externalId = await botSend(contact, msg);
+  await persistIfSent(contactId, msg, undefined, externalId);
   const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
   const now = new Date();
   const updated = await prisma.whatsAppContact.update({
@@ -689,7 +702,7 @@ export async function handleOutsideHours(contactId: string) {
       offeredToId: null,
       offeredAt: null,
       lastMessageAt: now,
-      lastMessagePreview: flow.closedMessage.slice(0, 120),
+      lastMessagePreview: msg.slice(0, 120),
     },
   });
   void recipientIdsForOpenQueue(updated.queueId).then((ids) => {
@@ -815,6 +828,51 @@ export async function expireStaleRatings() {
         tag: `wa-rating-${c.id}`,
       });
     }
+  }
+  return stale.length;
+}
+
+/**
+ * Após IDLE_CLOSE_HOURS sem mensagem: fecha sem enviar texto e
+ * devolve o número ao início do fluxo (próximo inbound = menu).
+ */
+export async function expireIdleConversations() {
+  const hours = Math.max(1, env.IDLE_CLOSE_HOURS);
+  const cutoff = new Date(Date.now() - hours * 60 * 60_000);
+  const stale = await prisma.whatsAppContact.findMany({
+    where: {
+      webhookPaused: false,
+      status: { in: ["bot", "waiting", "human", "awaiting_rating"] },
+      OR: [
+        { lastMessageAt: { lt: cutoff } },
+        { lastMessageAt: null, updatedAt: { lt: cutoff } },
+      ],
+    },
+    take: 200,
+  });
+
+  for (const c of stale) {
+    await prisma.whatsAppContact.update({
+      where: { id: c.id },
+      data: {
+        status: "closed",
+        botMenuStep: "department",
+        assignedToId: null,
+        assignedAt: null,
+        assumeWaitSeconds: null,
+        offeredToId: null,
+        offeredAt: null,
+        firstOfferedAt: null,
+        firstOfferedToId: null,
+        openedToAllAt: null,
+        openToAll: false,
+        queueId: null,
+        inactivityWarnedAt: null,
+        ratingAskedAt: null,
+        unreadCount: 0,
+      },
+    });
+    console.log(`[idle] ${hours}h sem interação → closed (fluxo reset): ${c.phone}`);
   }
   return stale.length;
 }

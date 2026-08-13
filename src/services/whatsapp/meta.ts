@@ -241,6 +241,14 @@ export class MetaClient {
     });
   }
 
+  /** Marca mensagem (e anteriores da conversa) como lida no WhatsApp. */
+  async markAsRead(messageId: string) {
+    return this.req({
+      status: "read",
+      message_id: messageId,
+    });
+  }
+
   async sendTemplate(opts: {
     to: string;
     name: string;

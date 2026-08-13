@@ -80,7 +80,7 @@ async function main() {
     data: {
       welcomeMessage: "Olá! Bem-vindo à Calangus Moda Jovem. Escolha um atendente:",
       closedMessage:
-        "Nosso horário de atendimento se encerrou (seg–sex, 08:00–18:00). Atenderemos assim que possível.",
+        "Nosso horário de atendimento se encerrou (seg–sex, 08:00–18:00). Atenderemos assim que possível.\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.",
       options: options as object[],
     },
   });

@@ -280,7 +280,7 @@ model WhatsAppSendLog {
 model WhatsAppFlow {
   id              String   @id @default("default")
   welcomeMessage  String   @default("Olá! Bem-vindo à Calangus. Escolha um atendente:")
-  closedMessage   String   @default("Nosso horário de atendimento se encerrou (seg–sex, 08:00–18:00). Atenderemos assim que possível.")
+  closedMessage   String   @default("Nosso horário de atendimento se encerrou (seg–sex, 08:00–18:00). Atenderemos assim que possível.\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.")
   menuEnabled     Boolean  @default(true)
   /** [{ key, label, action: "agent"|"queue", userId?, queueId? }] */
   options         Json     @default("[]")

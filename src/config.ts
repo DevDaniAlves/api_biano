@@ -38,6 +38,8 @@ const schema = z.object({
   CATALOG_WA_KEYWORD: z.string().default("catalogo"),
   /** wa_me | form — modo de contato no catálogo público. */
   CATALOG_CONTACT_MODE: z.enum(["wa_me", "form"]).default("wa_me"),
+  /** URL pública da loja/catálogo (msg fora do horário). */
+  CATALOG_PUBLIC_URL: z.string().default("https://webbiano-production.up.railway.app"),
   /** Se definido, ignora o telefone do Meu Crediário e envia só para este número (DDI+DDD). */
   WHATSAPP_OVERRIDE_PHONE: z.string().optional(),
   MESSAGE_TEMPLATE: z
@@ -58,6 +60,8 @@ const schema = z.object({
   RATING_TIMEOUT_MINUTES: z.coerce.number().default(5),
   INACTIVITY_WARN_MINUTES: z.coerce.number().default(10),
   INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(15),
+  /** Horas sem mensagem (qualquer lado) para fechar a conversa sem enviar texto. */
+  IDLE_CLOSE_HOURS: z.coerce.number().default(24),
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().default("mailto:contato@calangusmodajovem.com"),

@@ -288,6 +288,26 @@ export class EvolutionClient {
     return this.req("DELETE", `/instance/delete/${encodeURIComponent(instanceName)}`);
   }
 
+  /** Envia recibimento de leitura (✓✓ azul) para o WhatsApp. */
+  async markMessagesAsRead(
+    messages: Array<{ remoteJid: string; id: string; fromMe?: boolean }>
+  ) {
+    const instance = await this.resolveInstance();
+    if (!instance) {
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
+    }
+    if (!messages.length) {
+      return { ok: true, status: 200, data: { skipped: true }, text: "" };
+    }
+    return this.req("POST", `/chat/markMessageAsRead/${encodeURIComponent(instance)}`, {
+      readMessages: messages.map((m) => ({
+        remoteJid: m.remoteJid,
+        id: m.id,
+        fromMe: Boolean(m.fromMe),
+      })),
+    });
+  }
+
   async getBase64FromMedia(opts: {
     remoteJid: string;
     fromMe: boolean;

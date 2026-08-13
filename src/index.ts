@@ -7,7 +7,7 @@ import { router } from "./routes.js";
 import { catalogRouter } from "./routes/catalog.js";
 import { whatsappRouter } from "./routes/whatsapp.js";
 import { swaggerSpec } from "./swagger.js";
-import { expireStaleOffers } from "./services/whatsapp/flow.js";
+import { expireIdleConversations, expireStaleOffers } from "./services/whatsapp/flow.js";
 import { expireStaleRatings, UPLOADS_DIR } from "./services/whatsapp/service.js";
 import { failStaleAutomationRun, tickGestorAutomation } from "./services/gestor-automation.js";
 import { failStaleRunningJobs } from "./services/jobs.js";
@@ -48,6 +48,7 @@ const server = app.listen(env.PORT, () => {
   setInterval(() => {
     expireStaleOffers().catch((e) => console.error("[fila]", e));
     expireStaleRatings().catch((e) => console.error("[rating]", e));
+    expireIdleConversations().catch((e) => console.error("[idle]", e));
     tickGestorAutomation().catch((e) => console.error("[gestor-auto]", e));
   }, 30_000);
 });

@@ -5,7 +5,8 @@ import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 import { evolution, EvolutionClient } from "./evolution.js";
-import { messagingEnabled, sendOutbound } from "./gateway.js";
+import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
+import { meta } from "./meta.js";
 import {
   assumeOnOpen,
   expireStaleRatings,
@@ -412,9 +413,15 @@ export async function listMessages(
   if (opts?.assume !== false) {
     await assumeOnOpen(contactId, userId, role);
   }
-  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+  let contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
+  if (contact.unreadCount > 0) {
+    await markContactReadOnWhatsApp(contact).catch((err) =>
+      console.warn("[read]", err instanceof Error ? err.message : err)
+    );
+    contact = { ...contact, unreadCount: 0 };
+  }
   const messages = await prisma.whatsAppMessage.findMany({
     where: { contactId },
     orderBy: { createdAt: "asc" },
@@ -442,6 +449,50 @@ export async function listMessages(
     messages: withQuotedPayload(messages, contact.name || contact.phone),
     readOnly: contact.status === "closed" || contact.status === "awaiting_rating",
   };
+}
+
+/** Envia lido ao WhatsApp (Evolution/Meta) e zera unreadCount no BIANO. */
+async function markContactReadOnWhatsApp(contact: {
+  id: string;
+  phone: string;
+  remoteJid: string | null;
+  unreadCount: number;
+}) {
+  const limit = Math.min(Math.max(contact.unreadCount, 1), 40);
+  const inbound = await prisma.whatsAppMessage.findMany({
+    where: {
+      contactId: contact.id,
+      direction: "in",
+      NOT: { externalId: null },
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    select: { externalId: true },
+  });
+  const ids = inbound
+    .map((m) => (m.externalId || "").trim())
+    .filter((id) => id.length > 4);
+
+  if (ids.length && (await messagingEnabled())) {
+    const provider = await activeProvider();
+    const remoteJid =
+      contact.remoteJid ||
+      `${contact.phone.replace(/\D/g, "")}@s.whatsapp.net`;
+    if (provider === "meta") {
+      const r = await meta.markAsRead(ids[0]);
+      if (!r.ok) console.warn("[read/meta]", r.status, r.text.slice(0, 200));
+    } else {
+      const r = await evolution.markMessagesAsRead(
+        ids.map((id) => ({ remoteJid, id, fromMe: false }))
+      );
+      if (!r.ok) console.warn("[read/evolution]", r.status, r.text.slice(0, 200));
+    }
+  }
+
+  await prisma.whatsAppContact.update({
+    where: { id: contact.id },
+    data: { unreadCount: 0 },
+  });
 }
 
 function withQuotedPayload<
