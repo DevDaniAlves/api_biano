@@ -232,11 +232,12 @@ export class MetaClient {
     return { ok: res.ok, status: res.status, data, text };
   }
 
-  async sendText(to: string, text: string) {
+  async sendText(to: string, text: string, contextMessageId?: string | null) {
     return this.req({
       to: MetaClient.toNumber(to),
       type: "text",
       text: { preview_url: false, body: text },
+      ...(contextMessageId ? { context: { message_id: contextMessageId } } : {}),
     });
   }
 

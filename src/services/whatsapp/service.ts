@@ -303,6 +303,10 @@ async function upsertOutboundMessage(opts: {
   sentById?: string | null;
   externalId?: string | null;
   mediaUrl?: string | null;
+  quotedExternalId?: string | null;
+  quotedBody?: string | null;
+  quotedType?: string | null;
+  quotedMediaUrl?: string | null;
 }) {
   const since = new Date(Date.now() - 120_000);
 
@@ -359,6 +363,10 @@ async function upsertOutboundMessage(opts: {
       mediaUrl: opts.mediaUrl ?? null,
       sentById: opts.sentById ?? null,
       externalId: opts.externalId || null,
+      quotedExternalId: opts.quotedExternalId ?? null,
+      quotedBody: opts.quotedBody ?? null,
+      quotedType: opts.quotedType ?? null,
+      quotedMediaUrl: opts.quotedMediaUrl ?? null,
     },
   });
 }
@@ -540,6 +548,8 @@ export async function sendTextMessage(opts: {
   body: string;
   userId: string;
   role?: "admin" | "seller";
+  /** ID interno da mensagem sendo respondida. */
+  quotedMessageId?: string | null;
 }) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: opts.contactId },
@@ -557,6 +567,34 @@ export async function sendTextMessage(opts: {
 
   if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution ou Meta)");
 
+  let quoted: {
+    externalId: string;
+    fromMe: boolean;
+    remoteJid?: string | null;
+    body?: string | null;
+    quotedBody: string | null;
+    quotedType: string | null;
+    quotedMediaUrl: string | null;
+  } | null = null;
+
+  if (opts.quotedMessageId) {
+    const target = await prisma.whatsAppMessage.findFirst({
+      where: { id: opts.quotedMessageId, contactId: contact.id },
+    });
+    if (!target?.externalId) {
+      throw new Error("Não é possível responder a esta mensagem (sem ID do WhatsApp)");
+    }
+    quoted = {
+      externalId: target.externalId,
+      fromMe: target.direction === "out",
+      remoteJid: contact.remoteJid || `${contact.phone.replace(/\D/g, "")}@s.whatsapp.net`,
+      body: target.body,
+      quotedBody: target.body,
+      quotedType: target.type || "text",
+      quotedMediaUrl: target.mediaUrl,
+    };
+  }
+
   const text = await sellerPrefix(opts.userId, opts.body);
   const r = await sendOutbound({
     to: contact.remoteJid || contact.phone,
@@ -565,6 +603,14 @@ export async function sendTextMessage(opts: {
     kind: "text",
     text,
     category: "service",
+    quoted: quoted
+      ? {
+          externalId: quoted.externalId,
+          fromMe: quoted.fromMe,
+          remoteJid: quoted.remoteJid,
+          body: quoted.body,
+        }
+      : null,
   });
   if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
 
@@ -575,6 +621,10 @@ export async function sendTextMessage(opts: {
     body: text,
     sentById: opts.userId,
     externalId,
+    quotedExternalId: quoted?.externalId ?? null,
+    quotedBody: quoted?.quotedBody ?? null,
+    quotedType: quoted?.quotedType ?? null,
+    quotedMediaUrl: quoted?.quotedMediaUrl ?? null,
   });
   await prisma.whatsAppContact.update({
     where: { id: contact.id },

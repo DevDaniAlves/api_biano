@@ -637,6 +637,9 @@ whatsappRouter.post("/messages", async (req, res) => {
       body,
       userId: req.user!.id,
       role: req.user!.role as "admin" | "seller",
+      quotedMessageId: req.body?.quotedMessageId
+        ? String(req.body.quotedMessageId)
+        : null,
     });
     res.json(msg);
   } catch (err) {

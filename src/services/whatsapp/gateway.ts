@@ -63,6 +63,13 @@ export async function sendOutbound(opts: {
   category?: SendCategory;
   billable?: boolean;
   bodyPreview?: string | null;
+  /** Resposta a mensagem específica (Evolution quoted / Meta context). */
+  quoted?: {
+    externalId: string;
+    fromMe: boolean;
+    remoteJid?: string | null;
+    body?: string | null;
+  } | null;
 }): Promise<OutboundResult> {
   const provider = await activeProvider();
   const rawPhone = (opts.to.includes("@") ? opts.to.split("@")[0] : opts.to).replace(/\D/g, "");
@@ -141,7 +148,7 @@ export async function sendOutbound(opts: {
           fileName: opts.media.fileName,
         });
       } else {
-        r = await meta.sendText(phone, opts.text ?? "");
+        r = await meta.sendText(phone, opts.text ?? "", opts.quoted?.externalId);
       }
 
       const externalId = MetaClient.extractMessageId(r.data);
@@ -200,7 +207,18 @@ export async function sendOutbound(opts: {
         });
       }
     } else {
-      r = await evolution.sendText(opts.to, opts.text ?? "");
+      r = await evolution.sendText(
+        opts.to,
+        opts.text ?? "",
+        opts.quoted
+          ? {
+              id: opts.quoted.externalId,
+              fromMe: opts.quoted.fromMe,
+              remoteJid: opts.quoted.remoteJid,
+              body: opts.quoted.body,
+            }
+          : null
+      );
     }
 
     const externalId = EvolutionClient.extractMessageId(r.data);

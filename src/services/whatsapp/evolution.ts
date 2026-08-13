@@ -103,16 +103,42 @@ export class EvolutionClient {
     return null;
   }
 
-  async sendText(to: string, text: string) {
+  async sendText(
+    to: string,
+    text: string,
+    quoted?: {
+      id: string;
+      fromMe: boolean;
+      remoteJid?: string | null;
+      body?: string | null;
+    } | null
+  ) {
     const instance = await this.resolveInstance();
     if (!instance) {
       console.error("[evolution] sendText: nenhuma instância em Conectar WhatsApp");
       return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
     }
     const number = this.sendNumber(to);
+    const remoteJid =
+      (quoted?.remoteJid && String(quoted.remoteJid)) ||
+      `${number}@s.whatsapp.net`;
     const r = await this.req("POST", `/message/sendText/${encodeURIComponent(instance)}`, {
       number,
       text,
+      ...(quoted?.id
+        ? {
+            quoted: {
+              key: {
+                id: quoted.id,
+                fromMe: Boolean(quoted.fromMe),
+                remoteJid,
+              },
+              message: {
+                conversation: (quoted.body || " ").slice(0, 500),
+              },
+            },
+          }
+        : {}),
     });
     if (!r.ok) {
       console.error("[evolution] sendText", instance, number, r.status, r.text.slice(0, 300));
