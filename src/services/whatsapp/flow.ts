@@ -35,6 +35,25 @@ const DEFAULT_OPTIONS: FlowOption[] = [
 const DEPT_MENU =
   "Olá! Bem-vindo à Calangus.\n\nEscolha o setor:\n\n1 - Atendimento\n2 - Financeiro";
 
+const BACK_HINT = "0 - Voltar";
+
+function isBackCommand(body: string | null): boolean {
+  if (!body) return false;
+  const t = body.trim().toLowerCase().replace(/\s+/g, " ");
+  if (t === "voltar" || t === "0") return true;
+  if (/^0\s*[-–.]?\s*voltar$/.test(t)) return true;
+  return false;
+}
+
+function financeSelfServiceMessage() {
+  const link = (env.CREDIARIO_CLIENTE_LINK || "").trim();
+  return (
+    "Para mais detalhes sobre suas *faturas em aberto*, acesse o link abaixo e digite o *CPF* e a *data de nascimento*:\n\n" +
+    `${link}\n\n` +
+    "Calangus Moda Jovem"
+  );
+}
+
 export async function ensureFlow() {
   return prisma.whatsAppFlow.upsert({
     where: { id: "default" },
@@ -366,7 +385,7 @@ export async function sendSellersMenu(contactId: string) {
   });
   const flow = await getFlow();
   const options = await resolveMenuOptions();
-  const text = buildMenuText(flow.welcomeMessage, options);
+  const text = `${buildMenuText(flow.welcomeMessage, options)}\n${BACK_HINT}`;
   const externalId = await botSend(contact, text);
   await persistIfSent(
     contactId,
@@ -539,6 +558,11 @@ export async function offerFromQueue(contactId: string, queueId: string) {
 }
 
 export async function handleDepartmentChoice(contactId: string, raw: string) {
+  if (isBackCommand(raw)) {
+    await sendDepartmentMenu(contactId);
+    return;
+  }
+
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 1);
 
   if (key !== "1" && key !== "2") {
@@ -569,21 +593,11 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     return;
   }
 
-  // Financeiro → fila (sem menu de vendedores)
-  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
-  if (!queue) {
-    await prisma.whatsAppContact.update({
-      where: { id: contactId },
-      data: { botMenuStep: "department" },
-    });
-    await botSend(contact, "No momento não há fila configurada. Aguarde um momento.");
-    return;
-  }
-  await offerFromQueue(contactId, queue.id);
-  const msg =
-    "Certo! Encaminhamos você para o setor Financeiro. Em breve um atendente irá te responder.";
+  // Financeiro → mensagem self-service (link) e volta ao início do bot (sem fila).
+  const msg = financeSelfServiceMessage();
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
+  await sendDepartmentMenu(contactId);
 }
 
 async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
@@ -611,6 +625,11 @@ async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
 }
 
 export async function handleMenuChoice(contactId: string, raw: string) {
+  if (isBackCommand(raw)) {
+    await sendDepartmentMenu(contactId);
+    return;
+  }
+
   const flow = await getFlow();
   const options = await resolveMenuOptions();
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 2);
@@ -622,7 +641,8 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     await botSend(
       contact,
       "Opção inválida. Digite o número da opção:\n\n" +
-        buildMenuText(flow.welcomeMessage, options)
+        buildMenuText(flow.welcomeMessage, options) +
+        `\n${BACK_HINT}`
     );
     return;
   }
@@ -746,6 +766,10 @@ export async function processInboundBot(contactId: string, body: string | null, 
     }
 
     if (contact.status === "bot") {
+      if (isBackCommand(body)) {
+        await sendDepartmentMenu(contactId);
+        return;
+      }
       if (body && /^\s*\d+/.test(body)) {
         if (contact.botMenuStep === "department") {
           await handleDepartmentChoice(contactId, body);
