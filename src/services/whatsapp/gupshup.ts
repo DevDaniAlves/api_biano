@@ -194,6 +194,54 @@ export class GupshupClient {
     return last;
   }
 
+  /** Apps CAPI/FBC: upload direto → mediaId (evita Invalid Media URL na URL do Railway). */
+  async uploadPartnerMedia(opts: {
+    buffer: Buffer;
+    mimetype?: string;
+    fileName?: string;
+  }): Promise<string | null> {
+    const c = await this.credentials();
+    if (!this.apiKey || !c.appId || opts.buffer.length < 40) return null;
+
+    const mime = (opts.mimetype || "application/octet-stream").split(";")[0].trim();
+    const name = opts.fileName || `media.${mimeExt(mime, opts.fileName)}`;
+    const form = new FormData();
+    form.append("file_type", mime);
+    form.append("file", new Blob([Uint8Array.from(opts.buffer)], { type: mime }), name);
+
+    const headers: Record<string, string> = { token: this.apiKey };
+    if (this.apiKey.startsWith("sk_")) headers.Authorization = this.apiKey;
+
+    try {
+      const res = await fetch(`https://partner.gupshup.io/partner/app/${c.appId}/media`, {
+        method: "POST",
+        headers,
+        body: form,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      const text = await res.text().catch(() => "");
+      let data: unknown = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
+      const mediaId =
+        data && typeof data === "object" && "mediaId" in data
+          ? String((data as { mediaId?: unknown }).mediaId ?? "")
+          : "";
+      if (!res.ok || !mediaId) {
+        console.error("[gupshup] media upload", res.status, text.slice(0, 400));
+        return null;
+      }
+      console.log("[gupshup] media upload ok", mediaId.slice(0, 16));
+      return mediaId;
+    } catch (err) {
+      console.error("[gupshup] media upload", err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
   private async sendSession(to: string, formMessage: string): Promise<GupshupSendResult> {
     const fields = await this.sessionFields(to, formMessage);
     return this.postForm("/wa/api/v1/msg", fields);
@@ -216,20 +264,29 @@ export class GupshupClient {
 
   async sendImage(opts: {
     to: string;
-    url: string;
+    url?: string;
     caption?: string;
+    filename?: string;
+    mediaId?: string;
   }): Promise<GupshupSendResult> {
     return this.sendSession(
       opts.to,
-      buildSessionMessage({ kind: "image", url: opts.url, caption: opts.caption })
+      buildSessionMessage({
+        kind: "image",
+        url: opts.url,
+        caption: opts.caption,
+        filename: opts.filename,
+        mediaId: opts.mediaId,
+      })
     );
   }
 
   async sendFile(opts: {
     to: string;
-    url: string;
+    url?: string;
     filename?: string;
     caption?: string;
+    mediaId?: string;
   }): Promise<GupshupSendResult> {
     return this.sendSession(
       opts.to,
@@ -238,22 +295,36 @@ export class GupshupClient {
         url: opts.url,
         filename: opts.filename,
         caption: opts.caption,
+        mediaId: opts.mediaId,
       })
     );
   }
 
-  async sendAudio(opts: { to: string; url: string }): Promise<GupshupSendResult> {
-    return this.sendSession(opts.to, buildSessionMessage({ kind: "audio", url: opts.url }));
+  async sendAudio(opts: {
+    to: string;
+    url?: string;
+    mediaId?: string;
+  }): Promise<GupshupSendResult> {
+    return this.sendSession(
+      opts.to,
+      buildSessionMessage({ kind: "audio", url: opts.url, mediaId: opts.mediaId })
+    );
   }
 
   async sendVideo(opts: {
     to: string;
-    url: string;
+    url?: string;
     caption?: string;
+    mediaId?: string;
   }): Promise<GupshupSendResult> {
     return this.sendSession(
       opts.to,
-      buildSessionMessage({ kind: "video", url: opts.url, caption: opts.caption })
+      buildSessionMessage({
+        kind: "video",
+        url: opts.url,
+        caption: opts.caption,
+        mediaId: opts.mediaId,
+      })
     );
   }
 

@@ -748,7 +748,7 @@ export async function sendImageMessage(opts: {
       ? ""
       : opts.caption
         ? await sellerPrefix(opts.userId, opts.caption)
-        : await sellerPrefix(opts.userId, fallback);
+        : "";
 
   const buf = fs.readFileSync(opts.filePath);
   const b64 = buf.toString("base64");

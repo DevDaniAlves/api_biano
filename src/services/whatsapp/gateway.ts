@@ -215,16 +215,28 @@ export async function sendOutbound(opts: {
         r = await gupshup.sendTemplate({ to: phone, templateId, params });
       } else if (opts.media) {
         let url = toPublicMediaUrl(opts.media.link);
-        if (!url && opts.media.base64) {
-          const local = persistBase64Upload({
-            base64: opts.media.base64,
-            fileName: opts.media.fileName,
-            mimetype: opts.media.mimetype,
-          });
-          url = toPublicMediaUrl(local);
+        let mediaId: string | null = null;
+        if (opts.media.base64) {
+          const raw = opts.media.base64.replace(/^data:[^;]+;base64,/, "");
+          const buf = Buffer.from(raw, "base64");
+          if (buf.length >= 40) {
+            mediaId = await gupshup.uploadPartnerMedia({
+              buffer: buf,
+              mimetype: opts.media.mimetype,
+              fileName: opts.media.fileName,
+            });
+          }
+          if (!url) {
+            const local = persistBase64Upload({
+              base64: opts.media.base64,
+              fileName: opts.media.fileName,
+              mimetype: opts.media.mimetype,
+            });
+            url = toPublicMediaUrl(local);
+          }
         }
-        if (!url) {
-          const err = "Gupshup mídia exige URL pública (API_PUBLIC_URL + /uploads)";
+        if (!mediaId && !url) {
+          const err = "Gupshup mídia exige upload ou URL pública (API_PUBLIC_URL + /uploads)";
           await prisma.whatsAppSendLog.update({
             where: { id: log.id },
             data: { status: "failed", error: err },
@@ -232,18 +244,32 @@ export async function sendOutbound(opts: {
           return { ok: false, externalId: null, error: err, provider, logId: log.id };
         }
         const mt = opts.media.mediatype;
-        if (mt === "audio") r = await gupshup.sendAudio({ to: phone, url });
-        else if (mt === "video") {
-          r = await gupshup.sendVideo({ to: phone, url, caption: opts.media.caption });
+        const cap = opts.media.caption;
+        if (mt === "audio") {
+          r = await gupshup.sendAudio({ to: phone, url: url ?? undefined, mediaId: mediaId ?? undefined });
+        } else if (mt === "video") {
+          r = await gupshup.sendVideo({
+            to: phone,
+            url: url ?? undefined,
+            caption: cap,
+            mediaId: mediaId ?? undefined,
+          });
         } else if (mt === "document") {
           r = await gupshup.sendFile({
             to: phone,
-            url,
+            url: url ?? undefined,
             filename: opts.media.fileName,
-            caption: opts.media.caption,
+            caption: cap,
+            mediaId: mediaId ?? undefined,
           });
         } else {
-          r = await gupshup.sendImage({ to: phone, url, caption: opts.media.caption });
+          r = await gupshup.sendImage({
+            to: phone,
+            url: url ?? undefined,
+            caption: cap,
+            filename: opts.media.fileName,
+            mediaId: mediaId ?? undefined,
+          });
         }
       } else if (opts.interactive) {
         r = await gupshup.sendInteractive(phone, opts.interactive);

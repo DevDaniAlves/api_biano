@@ -25,6 +25,13 @@ describe("gupshup mapper outbound", () => {
     assert.equal(img.type, "image");
     assert.equal(img.originalUrl, "https://x/a.jpg");
     assert.equal(img.previewUrl, "https://x/a.jpg");
+    assert.equal(img.url, "https://x/a.jpg");
+    assert.equal(img.caption, "foto");
+    const byId = JSON.parse(
+      buildSessionMessage({ kind: "image", mediaId: "3674626312780147", caption: "oi" })
+    );
+    assert.equal(byId.id, "3674626312780147");
+    assert.equal(byId.caption, "oi");
     const file = JSON.parse(
       buildSessionMessage({ kind: "file", url: "https://x/a.pdf", filename: "boleto.pdf" })
     );

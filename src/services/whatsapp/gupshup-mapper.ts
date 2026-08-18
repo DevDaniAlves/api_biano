@@ -64,20 +64,39 @@ export function buildSessionMessage(opts: {
   url?: string;
   caption?: string;
   filename?: string;
+  mediaId?: string;
 }): string {
   if (opts.kind === "text") {
     return JSON.stringify({ type: "text", text: opts.text ?? "" });
   }
   if (opts.kind === "image") {
+    if (opts.mediaId) {
+      return JSON.stringify({
+        type: "image",
+        id: opts.mediaId,
+        ...(opts.caption ? { caption: opts.caption } : {}),
+      });
+    }
     const url = opts.url ?? "";
+    const filename = opts.filename || url.split("/").pop()?.split("?")[0] || "image.jpg";
     return JSON.stringify({
       type: "image",
+      caption: opts.caption ?? "",
       originalUrl: url,
       previewUrl: url,
-      ...(opts.caption ? { caption: opts.caption } : {}),
+      url,
+      filename,
     });
   }
   if (opts.kind === "file") {
+    if (opts.mediaId) {
+      return JSON.stringify({
+        type: "file",
+        id: opts.mediaId,
+        filename: opts.filename || "file",
+        ...(opts.caption ? { caption: opts.caption } : {}),
+      });
+    }
     return JSON.stringify({
       type: "file",
       url: opts.url ?? "",
@@ -86,7 +105,17 @@ export function buildSessionMessage(opts: {
     });
   }
   if (opts.kind === "audio") {
+    if (opts.mediaId) {
+      return JSON.stringify({ type: "audio", id: opts.mediaId });
+    }
     return JSON.stringify({ type: "audio", url: opts.url ?? "" });
+  }
+  if (opts.mediaId) {
+    return JSON.stringify({
+      type: "video",
+      id: opts.mediaId,
+      ...(opts.caption ? { caption: opts.caption } : {}),
+    });
   }
   return JSON.stringify({
     type: "video",
