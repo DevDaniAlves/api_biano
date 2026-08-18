@@ -364,8 +364,9 @@ whatsappRouter.get("/gupshup/status", async (_req, res) => {
     const webhookUrl = `${env.API_PUBLIC_URL.replace(/\/+$/, "")}/whatsapp/webhook/gupshup`;
     res.json({
       provider,
-      configured: Boolean(creds.apiKey && creds.appName && creds.source),
+      configured: Boolean(creds.apiKey && creds.source && (creds.appId || creds.appName)),
       appName: creds.appName || null,
+      appId: creds.appId || null,
       source: creds.source || null,
       wabaId: (row?.gupshupWabaId || "").trim() || null,
       coexistenceEnabled: Boolean(row?.coexistenceEnabled),

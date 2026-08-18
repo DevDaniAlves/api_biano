@@ -1,6 +1,19 @@
 import "dotenv/config";
 import { z } from "zod";
 
+/** Railway às vezes grava o valor com aspas literais: "BianoWhats". */
+function stripEnvQuotes(v: string | undefined) {
+  if (v == null) return v;
+  let t = v.trim();
+  if (
+    (t.startsWith('"') && t.endsWith('"') && t.length >= 2) ||
+    (t.startsWith("'") && t.endsWith("'") && t.length >= 2)
+  ) {
+    t = t.slice(1, -1).trim();
+  }
+  return t;
+}
+
 const schema = z.object({
   PORT: z.coerce.number().default(3333),
   DATABASE_URL: z.string().default("file:./dev.db"),
@@ -32,17 +45,19 @@ const schema = z.object({
   META_BOLETO_TEMPLATE_LANG: z.string().default("pt_BR"),
   /** Estimativa R$/msg faturável até rate card oficial set/2026. */
   META_ESTIMATED_BRL_PER_MSG: z.coerce.number().default(0.05),
-  /** Gupshup Access API (BSP). apikey só no backend. */
-  GUPSHUP_API_KEY: z.string().optional(),
+  /** Key do Settings do app (console novo: BianoWhats → Settings). */
+  GUPSHUP_API_KEY: z.string().optional().transform(stripEnvQuotes),
   GUPSHUP_API_BASE_URL: z.string().default("https://api.gupshup.io"),
   /** src.name do app no painel Gupshup. */
-  GUPSHUP_APP_NAME: z.string().optional(),
+  GUPSHUP_APP_NAME: z.string().optional().transform(stripEnvQuotes),
+  /** App ID (Settings), UUID. Apps FBC/Live usam v3 com este ID. */
+  GUPSHUP_APP_ID: z.string().optional().transform(stripEnvQuotes),
   /** Número E.164 sem +, ex. 556634016000. */
-  GUPSHUP_SOURCE: z.string().optional(),
+  GUPSHUP_SOURCE: z.string().optional().transform(stripEnvQuotes),
   /** Header/query opcional no webhook (Gupshup não usa hub.verify da Meta). */
-  GUPSHUP_WEBHOOK_SECRET: z.string().optional(),
+  GUPSHUP_WEBHOOK_SECRET: z.string().optional().transform(stripEnvQuotes),
   /** UUID do template Utility no painel Gupshup (espelho do boleto_lembrete). */
-  GUPSHUP_BOLETO_TEMPLATE_ID: z.string().optional(),
+  GUPSHUP_BOLETO_TEMPLATE_ID: z.string().optional().transform(stripEnvQuotes),
   /** Número comercial para wa.me (DDI+DDD+número). */
   WHATSAPP_BUSINESS_PHONE: z.string().optional(),
   /** Keyword no wa.me que pula menu departamento → vendedores. */

@@ -35,6 +35,11 @@ export function extractGupshupMessageId(data: unknown): string | null {
   if (!isObj(data)) return null;
   const id = data.messageId ?? data.messageid;
   if (typeof id === "string" && id.length > 3) return id;
+  const messages = data.messages;
+  if (Array.isArray(messages) && messages[0] && typeof messages[0] === "object") {
+    const mid = (messages[0] as { id?: unknown }).id;
+    if (typeof mid === "string" && mid.length > 3) return mid;
+  }
   return null;
 }
 
