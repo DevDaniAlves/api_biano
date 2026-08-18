@@ -13,7 +13,7 @@ import {
   unwrapGupshupBodies,
 } from "./gupshup-mapper.js";
 import { isInternalMediaUrl, isUnreachableMediaUrl } from "./gupshup.js";
-import { isWebmAudio, needsOggConversion, normalizeGupshupAudioMime } from "./gupshup-audio.js";
+import { isWebmAudio, needsAudioTranscode, needsOggConversion, normalizeGupshupAudioMime } from "./gupshup-audio.js";
 
 describe("gupshup mapper outbound", () => {
   it("monta texto, imagem, arquivo e template oficiais", () => {
@@ -37,12 +37,14 @@ describe("gupshup mapper outbound", () => {
     const aud = JSON.parse(
       buildSessionMessage({
         kind: "audio",
-        url: "https://apibiano-production.up.railway.app/uploads/voz.ogg",
+        url: "https://apibiano-production.up.railway.app/uploads/voz.mp3",
+        filename: "voz.mp3",
       })
     );
     assert.equal(aud.type, "audio");
-    assert.equal(aud.url, "https://apibiano-production.up.railway.app/uploads/voz.ogg");
-    assert.equal(JSON.stringify(aud), '{"type":"audio","url":"https://apibiano-production.up.railway.app/uploads/voz.ogg"}');
+    assert.equal(aud.url, "https://apibiano-production.up.railway.app/uploads/voz.mp3");
+    assert.equal(aud.filename, "voz.mp3");
+    assert.equal(aud.caption, "");
     const file = JSON.parse(
       buildSessionMessage({ kind: "file", url: "https://x/a.pdf", filename: "boleto.pdf" })
     );
@@ -81,14 +83,13 @@ describe("gupshup mapper outbound", () => {
   });
 
   it("normaliza MIME de áudio para Gupshup", () => {
-    assert.equal(normalizeGupshupAudioMime("audio/ogg"), "audio/ogg; codecs=opus");
-    assert.equal(normalizeGupshupAudioMime("audio/webm;codecs=opus"), "audio/webm");
-    assert.equal(normalizeGupshupAudioMime("audio/mp4", "gravacao.m4a"), "audio/mp4");
+    assert.equal(normalizeGupshupAudioMime("audio/mpeg", "audio.mp3"), "audio/mpeg");
     assert.equal(isWebmAudio("audio/webm"), true);
     assert.equal(isWebmAudio("audio/ogg; codecs=opus", "x.ogg"), false);
+    assert.equal(needsAudioTranscode("audio/mp4", "audio.m4a"), true);
+    assert.equal(needsAudioTranscode("audio/webm"), true);
+    assert.equal(needsAudioTranscode("audio/mpeg", "voz.mp3"), false);
     assert.equal(needsOggConversion("audio/mp4", "audio.m4a"), true);
-    assert.equal(needsOggConversion("audio/webm"), true);
-    assert.equal(needsOggConversion("audio/ogg; codecs=opus", "voz.ogg"), false);
   });
 
   it("converte botão Meta em quick_reply da Access API", () => {

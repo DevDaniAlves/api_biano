@@ -173,6 +173,13 @@ export async function handleGupshupWebhook(body: unknown) {
     try {
       if (parsed.kind === "message-event") {
         const ids = [parsed.gsId, parsed.externalId].filter((id): id is string => Boolean(id));
+        if (parsed.status === "failed") {
+          console.error(
+            "[gupshup] message-event failed",
+            ids.join("|") || "-",
+            parsed.statusError || "(sem detalhe)"
+          );
+        }
         await applyGupshupStatus({
           ids,
           status: parsed.status || "unknown",

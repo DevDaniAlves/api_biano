@@ -108,7 +108,14 @@ export function buildSessionMessage(opts: {
     if (opts.mediaId) {
       return JSON.stringify({ type: "audio", id: opts.mediaId });
     }
-    return JSON.stringify({ type: "audio", url: opts.url ?? "" });
+    const url = opts.url ?? "";
+    const filename = opts.filename || url.split("/").pop()?.split("?")[0] || "audio.mp3";
+    return JSON.stringify({
+      type: "audio",
+      caption: opts.caption ?? "",
+      filename,
+      url,
+    });
   }
   if (opts.mediaId) {
     return JSON.stringify({

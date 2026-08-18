@@ -355,11 +355,17 @@ export class GupshupClient {
   async sendAudio(opts: {
     to: string;
     url?: string;
+    filename?: string;
     mediaId?: string;
   }): Promise<GupshupSendResult> {
     return this.sendSession(
       opts.to,
-      buildSessionMessage({ kind: "audio", url: opts.url, mediaId: opts.mediaId })
+      buildSessionMessage({
+        kind: "audio",
+        url: opts.url,
+        filename: opts.filename,
+        mediaId: opts.mediaId,
+      })
     );
   }
 

@@ -216,6 +216,7 @@ export async function sendOutbound(opts: {
         r = await gupshup.sendTemplate({ to: phone, templateId, params });
       } else if (opts.media) {
         let url = toPublicMediaUrl(opts.media.link);
+        let mediaFileName = opts.media.fileName;
         if (opts.media.base64) {
           const raw = opts.media.base64.replace(/^data:[^;]+;base64,/, "");
           let buf = Buffer.from(raw, "base64");
@@ -231,10 +232,11 @@ export async function sendOutbound(opts: {
               buf = Buffer.from(prep.buffer);
               uploadMime = prep.mimetype;
               uploadName = prep.fileName;
+              mediaFileName = prep.fileName;
               console.log("[gupshup] audio preparado", uploadMime, uploadName);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-                const errOut = `Áudio: conversão para OGG Opus falhou (${msg}).`;
+              const errOut = `Áudio: conversão para MP3 falhou (${msg}).`;
               console.error("[gupshup] audio prepare", msg);
               await prisma.whatsAppSendLog.update({
                 where: { id: log.id },
@@ -279,7 +281,7 @@ export async function sendOutbound(opts: {
         console.log("[gupshup] mídia", mt, `url=${url.slice(0, 96)}`);
         const cap = opts.media.caption;
         if (mt === "audio") {
-          r = await gupshup.sendAudio({ to: phone, url });
+          r = await gupshup.sendAudio({ to: phone, url, filename: mediaFileName });
           console.log("[gupshup] send audio", r.status, (r.text || "").slice(0, 200));
         } else if (mt === "video") {
           r = await gupshup.sendVideo({ to: phone, url, caption: cap });

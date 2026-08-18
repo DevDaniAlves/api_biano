@@ -7,13 +7,13 @@ import path from "node:path";
 export function normalizeGupshupAudioMime(mimetype?: string, fileName?: string): string {
   const raw = (mimetype || "").trim().toLowerCase();
   const ext = fileName?.split(".").pop()?.toLowerCase();
+  if (raw.includes("mpeg") || raw.includes("mp3") || ext === "mp3") return "audio/mpeg";
   if (raw.includes("ogg") || ext === "ogg" || ext === "opus") return "audio/ogg; codecs=opus";
   if (raw.includes("mp4") || raw.includes("m4a") || ext === "m4a" || ext === "mp4") return "audio/mp4";
-  if (raw.includes("mpeg") || raw.includes("mp3") || ext === "mp3") return "audio/mpeg";
   if (raw.includes("aac")) return "audio/aac";
   if (raw.includes("amr")) return "audio/amr";
   if (raw.includes("webm") || ext === "webm") return "audio/webm";
-  return "audio/ogg; codecs=opus";
+  return "audio/mpeg";
 }
 
 export function isWebmAudio(mimetype?: string, fileName?: string): boolean {
@@ -21,12 +21,17 @@ export function isWebmAudio(mimetype?: string, fileName?: string): boolean {
   return raw.includes("webm") || fileName?.toLowerCase().endsWith(".webm") || false;
 }
 
-/** MediaRecorder (m4a/webm) não é o formato de voz do WhatsApp. */
-export function needsOggConversion(mimetype?: string, fileName?: string): boolean {
+/** MediaRecorder (m4a/webm/ogg) → transcodificar para MP3 (sample Gupshup). */
+export function needsAudioTranscode(mimetype?: string, fileName?: string): boolean {
   const raw = (mimetype || "").toLowerCase();
   const ext = fileName?.split(".").pop()?.toLowerCase();
-  if (raw.includes("ogg") || ext === "ogg" || ext === "opus") return false;
+  if (raw.includes("mpeg") || raw.includes("mp3") || ext === "mp3") return false;
   return true;
+}
+
+/** @deprecated */
+export function needsOggConversion(mimetype?: string, fileName?: string): boolean {
+  return needsAudioTranscode(mimetype, fileName);
 }
 
 function inputExt(mimetype?: string, fileName?: string): string {
@@ -59,12 +64,12 @@ function runFfmpeg(ffmpegPath: string, args: string[]): Promise<void> {
   });
 }
 
-/** Chrome/Safari: WebM ou AAC-in-MP4. WhatsApp: ogg opus (ou mpeg no sample da Gupshup). */
-export async function convertAudioToOggOpus(input: Buffer, srcExt: string): Promise<Buffer> {
+/** Sample Gupshup usa MP3 (gs-upload.gupshup.io/.../sample01.mp3). */
+export async function convertAudioToMp3(input: Buffer, srcExt: string): Promise<Buffer> {
   const ffmpegPath = await ffmpegBin();
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const inPath = path.join(os.tmpdir(), `biano-wa-${id}.${srcExt || "bin"}`);
-  const outPath = path.join(os.tmpdir(), `biano-wa-${id}.ogg`);
+  const outPath = path.join(os.tmpdir(), `biano-wa-${id}.mp3`);
   await fs.writeFile(inPath, input);
   try {
     await runFfmpeg(ffmpegPath, [
@@ -75,13 +80,11 @@ export async function convertAudioToOggOpus(input: Buffer, srcExt: string): Prom
       "-ac",
       "1",
       "-ar",
-      "16000",
+      "44100",
       "-c:a",
-      "libopus",
-      "-application",
-      "voip",
+      "libmp3lame",
       "-b:a",
-      "24k",
+      "64k",
       outPath,
     ]);
     const out = await fs.readFile(outPath);
@@ -94,7 +97,7 @@ export async function convertAudioToOggOpus(input: Buffer, srcExt: string): Prom
 }
 
 export async function convertWebmToOggOpus(input: Buffer): Promise<Buffer> {
-  return convertAudioToOggOpus(input, "webm");
+  return convertAudioToMp3(input, "webm");
 }
 
 export async function prepareGupshupAudioUpload(opts: {
@@ -103,12 +106,12 @@ export async function prepareGupshupAudioUpload(opts: {
   fileName?: string;
 }): Promise<{ buffer: Buffer; mimetype: string; fileName: string }> {
   let { buffer, mimetype, fileName } = opts;
-  if (needsOggConversion(mimetype, fileName)) {
-    buffer = await convertAudioToOggOpus(buffer, inputExt(mimetype, fileName));
-    mimetype = "audio/ogg; codecs=opus";
-    fileName = (fileName || "audio").replace(/\.[a-z0-9]+$/i, "") + ".ogg";
+  if (needsAudioTranscode(mimetype, fileName)) {
+    buffer = await convertAudioToMp3(buffer, inputExt(mimetype, fileName));
+    mimetype = "audio/mpeg";
+    fileName = (fileName || "audio").replace(/\.[a-z0-9]+$/i, "") + ".mp3";
   }
   const mime = normalizeGupshupAudioMime(mimetype, fileName);
-  const name = fileName || "audio.ogg";
+  const name = fileName || "audio.mp3";
   return { buffer, mimetype: mime, fileName: name };
 }
