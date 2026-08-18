@@ -34,6 +34,15 @@ describe("gupshup mapper outbound", () => {
     );
     assert.equal(byId.id, "3674626312780147");
     assert.equal(byId.caption, "oi");
+    const aud = JSON.parse(
+      buildSessionMessage({
+        kind: "audio",
+        url: "https://apibiano-production.up.railway.app/uploads/voz.ogg",
+      })
+    );
+    assert.equal(aud.type, "audio");
+    assert.equal(aud.url, "https://apibiano-production.up.railway.app/uploads/voz.ogg");
+    assert.equal(JSON.stringify(aud), '{"type":"audio","url":"https://apibiano-production.up.railway.app/uploads/voz.ogg"}');
     const file = JSON.parse(
       buildSessionMessage({ kind: "file", url: "https://x/a.pdf", filename: "boleto.pdf" })
     );

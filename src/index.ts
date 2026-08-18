@@ -25,8 +25,10 @@ app.use(
         res.setHeader("Content-Type", "audio/ogg; codecs=opus");
       } else if (filePath.endsWith(".webm")) {
         res.setHeader("Content-Type", "audio/webm");
-      } else if (filePath.endsWith(".m4a") || filePath.endsWith(".mp4")) {
+      } else       if (filePath.endsWith(".m4a") || filePath.endsWith(".mp4")) {
         if (filePath.endsWith(".m4a")) res.setHeader("Content-Type", "audio/mp4");
+      } else if (filePath.endsWith(".mp3")) {
+        res.setHeader("Content-Type", "audio/mpeg");
       }
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     },
