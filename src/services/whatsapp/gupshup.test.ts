@@ -137,4 +137,40 @@ describe("gupshup webhook mapper", () => {
     const other = parseGupshupEnvelope({ type: "account-event", payload: {} });
     assert.equal(other.kind, "other");
   });
+
+  it("botão / lista inbound usa o id (1, 2, 0)", () => {
+    const btn = parseGupshupEnvelope({
+      type: "message",
+      payload: {
+        id: "wamid.BTN",
+        source: "5566992838885",
+        type: "button_reply",
+        payload: { id: "1", title: "Atendimento" },
+        sender: { phone: "5566992838885" },
+      },
+    });
+    assert.equal(btn.body, "1");
+    const list = parseGupshupEnvelope({
+      type: "message",
+      payload: {
+        id: "wamid.LIST",
+        source: "5566992838885",
+        type: "list_reply",
+        payload: { id: "0", title: "Voltar" },
+        sender: { phone: "5566992838885" },
+      },
+    });
+    assert.equal(list.body, "0");
+    const byTitle = parseGupshupEnvelope({
+      type: "message",
+      payload: {
+        id: "wamid.FIN",
+        source: "5566992838885",
+        type: "button_reply",
+        payload: { title: "Financeiro" },
+        sender: { phone: "5566992838885" },
+      },
+    });
+    assert.equal(byTitle.body, "2");
+  });
 });

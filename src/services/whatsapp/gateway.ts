@@ -7,7 +7,7 @@ import { meta, MetaClient } from "./meta.js";
 
 export type WhatsAppProvider = "meta" | "evolution" | "gupshup";
 export type SendSource = "boleto" | "bot" | "agent" | "system";
-export type SendKind = "text" | "template" | "media" | "audio";
+export type SendKind = "text" | "template" | "media" | "audio" | "interactive";
 export type SendCategory =
   | "utility"
   | "service"
@@ -66,6 +66,8 @@ export async function sendOutbound(opts: {
     caption?: string;
     fileName?: string;
   };
+  /** Botões/lista Cloud API (Meta / Gupshup FBC). */
+  interactive?: Record<string, unknown>;
   contactId?: string | null;
   boletoId?: string | null;
   category?: SendCategory;
@@ -86,11 +88,13 @@ export async function sendOutbound(opts: {
     opts.kind ??
     (opts.template
       ? "template"
-      : opts.media?.mediatype === "audio"
-        ? "audio"
-        : opts.media
-          ? "media"
-          : "text");
+      : opts.interactive
+        ? "interactive"
+        : opts.media?.mediatype === "audio"
+          ? "audio"
+          : opts.media
+            ? "media"
+            : "text");
 
   const category: SendCategory =
     opts.category ??
@@ -158,6 +162,8 @@ export async function sendOutbound(opts: {
           caption: opts.media.caption,
           fileName: opts.media.fileName,
         });
+      } else if (opts.interactive) {
+        r = await meta.sendInteractive(phone, opts.interactive);
       } else {
         r = await meta.sendText(phone, opts.text ?? "", opts.quoted?.externalId);
       }
@@ -239,6 +245,8 @@ export async function sendOutbound(opts: {
         } else {
           r = await gupshup.sendImage({ to: phone, url, caption: opts.media.caption });
         }
+      } else if (opts.interactive) {
+        r = await gupshup.sendInteractive(phone, opts.interactive);
       } else {
         r = await gupshup.sendText(phone, opts.text ?? "");
       }

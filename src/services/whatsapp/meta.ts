@@ -241,6 +241,14 @@ export class MetaClient {
     });
   }
 
+  async sendInteractive(to: string, interactive: Record<string, unknown>) {
+    return this.req({
+      to: MetaClient.toNumber(to),
+      type: "interactive",
+      interactive,
+    });
+  }
+
   /** Marca mensagem (e anteriores da conversa) como lida no WhatsApp. */
   async markAsRead(messageId: string) {
     return this.req({

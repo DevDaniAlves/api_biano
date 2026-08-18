@@ -124,6 +124,46 @@ function innerPayload(payload: Record<string, unknown>): Record<string, unknown>
   return isObj(payload.payload) ? payload.payload : {};
 }
 
+function interactiveChoiceId(
+  payload: Record<string, unknown>,
+  inner: Record<string, unknown>
+): string {
+  const nested = isObj(payload.interactive)
+    ? payload.interactive
+    : isObj(inner.interactive)
+      ? inner.interactive
+      : {};
+  const button = isObj(inner.button_reply)
+    ? inner.button_reply
+    : isObj(nested.button_reply)
+      ? nested.button_reply
+      : {};
+  const list = isObj(inner.list_reply)
+    ? inner.list_reply
+    : isObj(nested.list_reply)
+      ? nested.list_reply
+      : {};
+  const id =
+    str(inner.id) ||
+    str(inner.postbackText) ||
+    str(inner.postback) ||
+    str(button.id) ||
+    str(list.id);
+  if (id) return id;
+  const title = str(button.title || list.title || inner.title || inner.text);
+  const t = title.trim().toLowerCase();
+  if (t === "voltar" || t.startsWith("0")) return "0";
+  if (t.includes("financeiro")) return "2";
+  if (t.includes("atendimento")) return "1";
+  return "";
+}
+
+export function waTitle(s: string, max = 20) {
+  const t = s.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return t.slice(0, max);
+}
+
 function senderOf(payload: Record<string, unknown>): Record<string, unknown> {
   return isObj(payload.sender) ? payload.sender : {};
 }
@@ -211,7 +251,18 @@ export function parseGupshupEnvelope(raw: Record<string, unknown>): ParsedGupshu
   let mediaFileName: string | null = null;
 
   if (messageType === "text" || messageType === "quick_reply" || messageType === "button") {
-    body = str(inner.text || payload.text || inner.title || inner.payload);
+    body =
+      interactiveChoiceId(payload, inner) ||
+      str(inner.text || payload.text || inner.title || inner.payload);
+  } else if (
+    messageType === "button_reply" ||
+    messageType === "list_reply" ||
+    messageType === "interactive"
+  ) {
+    body =
+      interactiveChoiceId(payload, inner) ||
+      str(inner.title || inner.text) ||
+      `[${messageType}]`;
   } else if (messageType === "image" || messageType === "sticker") {
     mediaUrl = str(inner.url || inner.originalUrl || inner.contentUrl) || null;
     body = str(inner.caption || inner.text) || "[imagem]";

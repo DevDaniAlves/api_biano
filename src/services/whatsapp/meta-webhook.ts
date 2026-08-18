@@ -195,11 +195,15 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
           typeof m.interactive === "object"
         ) {
           const inter = m.interactive as {
-            button_reply?: { title?: string };
-            list_reply?: { title?: string };
+            button_reply?: { id?: string; title?: string };
+            list_reply?: { id?: string; title?: string };
           };
           body = String(
-            inter.button_reply?.title ?? inter.list_reply?.title ?? "[interactive]"
+            inter.button_reply?.id ??
+              inter.list_reply?.id ??
+              inter.button_reply?.title ??
+              inter.list_reply?.title ??
+              "[interactive]"
           );
         } else {
           body = `[${type}]`;

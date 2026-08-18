@@ -389,6 +389,18 @@ export class GupshupClient {
     });
   }
 
+  async sendInteractive(to: string, interactive: Record<string, unknown>): Promise<GupshupSendResult> {
+    if ((env.GUPSHUP_APP_ID || "").trim()) {
+      return this.postFbc(to, { type: "interactive", interactive });
+    }
+    const bodyObj = interactive.body;
+    const body =
+      bodyObj && typeof bodyObj === "object" && "text" in bodyObj
+        ? String((bodyObj as { text?: unknown }).text ?? "")
+        : "";
+    return this.sendText(to, body);
+  }
+
   static extractMessageId(data: unknown): string | null {
     return extractGupshupMessageId(data);
   }

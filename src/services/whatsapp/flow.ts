@@ -2,7 +2,8 @@ import type { Prisma } from "@prisma/client";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
-import { messagingEnabled, sendOutbound } from "./gateway.js";
+import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
+import { waTitle } from "./gupshup-mapper.js";
 import {
   BUSINESS,
   isBusinessHours,
@@ -32,10 +33,16 @@ const DEFAULT_OPTIONS: FlowOption[] = [
   { key: "4", label: "Não tenho preferência", action: "queue", queueId: null },
 ];
 
-const DEPT_MENU =
-  "Olá! Bem-vindo à Calangus.\n\nEscolha o setor:\n\n1 - Atendimento\n2 - Financeiro";
+const DEPT_BODY = "Olá! Bem-vindo à Calangus.\n\nEscolha o setor:";
 
 const BACK_HINT = "0 - Voltar";
+
+async function canUseOfficialButtons() {
+  const p = await activeProvider();
+  if (p === "meta") return true;
+  if (p === "gupshup") return Boolean((env.GUPSHUP_APP_ID || "").trim());
+  return false;
+}
 
 function isBackCommand(body: string | null): boolean {
   if (!body) return false;
@@ -222,6 +229,49 @@ async function botSend(
   return r.externalId;
 }
 
+async function botSendInteractive(
+  contact: { id?: string; phone: string; remoteJid?: string | null; webhookPaused?: boolean },
+  preview: string,
+  interactive: Record<string, unknown>
+): Promise<string | null> {
+  if (contact.webhookPaused) {
+    console.warn("[bot] webhook pausado, skip send:", contact.phone);
+    return null;
+  }
+  if (!(await messagingEnabled()) || !(await canUseOfficialButtons())) {
+    return botSend(contact, preview);
+  }
+
+  const wait = botDelayMs();
+  console.log("[bot] delay", wait, "ms", contact.phone);
+  await sleep(wait);
+
+  if (contact.id) {
+    const fresh = await prisma.whatsAppContact.findUnique({ where: { id: contact.id } });
+    if (fresh?.webhookPaused) {
+      console.warn("[bot] pausado durante delay, skip:", contact.phone);
+      return null;
+    }
+  }
+
+  const r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "bot",
+    contactId: contact.id ?? null,
+    kind: "interactive",
+    text: preview,
+    bodyPreview: preview,
+    category: "service",
+    interactive,
+  });
+  if (!r.ok) {
+    console.error("[bot] falha interactive, fallback texto", r.error);
+    return botSend(contact, preview);
+  }
+  console.log("[bot] enviado interactive:", preview.replace(/\s+/g, " ").slice(0, 80));
+  return r.externalId;
+}
+
 async function persistIfSent(
   contactId: string,
   text: string,
@@ -362,14 +412,25 @@ export async function restartToBot(contactId: string) {
 }
 
 /** Menu departamento (Financeiro / Atendimento). */
-export async function sendDepartmentMenu(contactId: string) {
+export async function sendDepartmentMenu(contactId: string, bodyText = DEPT_BODY) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const externalId = await botSend(contact, DEPT_MENU);
+  const preview = `${bodyText}\n\n1 - Atendimento\n2 - Financeiro`;
+  const interactive = {
+    type: "button",
+    body: { text: bodyText },
+    action: {
+      buttons: [
+        { type: "reply", reply: { id: "1", title: "Atendimento" } },
+        { type: "reply", reply: { id: "2", title: "Financeiro" } },
+      ],
+    },
+  };
+  const externalId = await botSendInteractive(contact, preview, interactive);
   await persistIfSent(
     contactId,
-    DEPT_MENU,
+    preview,
     {
       status: "bot",
       botMenuStep: "department",
@@ -386,7 +447,22 @@ export async function sendSellersMenu(contactId: string) {
   const flow = await getFlow();
   const options = await resolveMenuOptions();
   const text = `${buildMenuText(flow.welcomeMessage, options)}\n${BACK_HINT}`;
-  const externalId = await botSend(contact, text);
+  const rows = [
+    ...options.map((o) => ({
+      id: o.key,
+      title: waTitle(o.label),
+    })),
+    { id: "0", title: "Voltar" },
+  ].slice(0, 10);
+  const interactive = {
+    type: "list",
+    body: { text: waTitle(flow.welcomeMessage, 1024) || "Escolha o atendente:" },
+    action: {
+      button: "Ver opções",
+      sections: [{ title: "Atendimento", rows }],
+    },
+  };
+  const externalId = await botSendInteractive(contact, text, interactive);
   await persistIfSent(
     contactId,
     text,
@@ -566,10 +642,7 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 1);
 
   if (key !== "1" && key !== "2") {
-    const contact = await prisma.whatsAppContact.findUniqueOrThrow({
-      where: { id: contactId },
-    });
-    await botSend(contact, "Opção inválida.\n\n" + DEPT_MENU);
+    await sendDepartmentMenu(contactId, "Opção inválida. Escolha o setor:");
     return;
   }
 
@@ -630,20 +703,11 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     return;
   }
 
-  const flow = await getFlow();
   const options = await resolveMenuOptions();
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 2);
   const choice = options.find((o) => o.key === key);
   if (!choice) {
-    const contact = await prisma.whatsAppContact.findUniqueOrThrow({
-      where: { id: contactId },
-    });
-    await botSend(
-      contact,
-      "Opção inválida. Digite o número da opção:\n\n" +
-        buildMenuText(flow.welcomeMessage, options) +
-        `\n${BACK_HINT}`
-    );
+    await sendSellersMenu(contactId);
     return;
   }
 
