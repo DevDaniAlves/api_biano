@@ -17,8 +17,8 @@ const schema = z.object({
     .transform((v) => v !== "false" && v !== "0"),
   WHATSAPP_API_URL: z.string().optional(),
   WHATSAPP_API_KEY: z.string().optional(),
-  /** evolution | meta — transporte ativo de envio/recebimento. */
-  WHATSAPP_PROVIDER: z.enum(["evolution", "meta"]).default("evolution"),
+  /** evolution | meta | gupshup — transporte ativo de envio/recebimento. */
+  WHATSAPP_PROVIDER: z.enum(["evolution", "meta", "gupshup"]).default("evolution"),
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
   META_ACCESS_TOKEN: z.string().optional(),
@@ -32,6 +32,17 @@ const schema = z.object({
   META_BOLETO_TEMPLATE_LANG: z.string().default("pt_BR"),
   /** Estimativa R$/msg faturável até rate card oficial set/2026. */
   META_ESTIMATED_BRL_PER_MSG: z.coerce.number().default(0.05),
+  /** Gupshup Access API (BSP). apikey só no backend. */
+  GUPSHUP_API_KEY: z.string().optional(),
+  GUPSHUP_API_BASE_URL: z.string().default("https://api.gupshup.io"),
+  /** src.name do app no painel Gupshup. */
+  GUPSHUP_APP_NAME: z.string().optional(),
+  /** Número E.164 sem +, ex. 556634016000. */
+  GUPSHUP_SOURCE: z.string().optional(),
+  /** Header/query opcional no webhook (Gupshup não usa hub.verify da Meta). */
+  GUPSHUP_WEBHOOK_SECRET: z.string().optional(),
+  /** UUID do template Utility no painel Gupshup (espelho do boleto_lembrete). */
+  GUPSHUP_BOLETO_TEMPLATE_ID: z.string().optional(),
   /** Número comercial para wa.me (DDI+DDD+número). */
   WHATSAPP_BUSINESS_PHONE: z.string().optional(),
   /** Keyword no wa.me que pula menu departamento → vendedores. */

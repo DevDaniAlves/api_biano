@@ -144,6 +144,40 @@ async function sendWhatsApp(
     return { ok: r.ok, error: r.error };
   }
 
+  if (provider === "gupshup") {
+    const templateId = (env.GUPSHUP_BOLETO_TEMPLATE_ID || "").trim();
+    if (!templateId) {
+      return {
+        ok: false,
+        error: "GUPSHUP_BOLETO_TEMPLATE_ID não configurado (template no painel Gupshup)",
+      };
+    }
+    const valorFmt = boleto.valorVencimento.toLocaleString("pt-BR", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const r = await sendOutbound({
+      to: number,
+      source: "boleto",
+      boletoId: boleto.id,
+      kind: "template",
+      category: "utility",
+      billable: true,
+      bodyPreview: text,
+      template: {
+        name: templateId,
+        gupshupId: templateId,
+        params: [
+          firstName(boleto.clienteNome),
+          valorFmt,
+          formatBrDate(boleto.vencimento),
+          env.CREDIARIO_CLIENTE_LINK,
+        ],
+      },
+    });
+    return { ok: r.ok, error: r.error };
+  }
+
   const instance = await evolution.resolveInstance();
   if (!instance) {
     return { ok: false, error: "WhatsApp não conectado. Conecte pelo QR em Conectar." };

@@ -1,8 +1,11 @@
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { evolution, EvolutionClient } from "./evolution.js";
+import { gupshup, persistBase64Upload, toPublicMediaUrl } from "./gupshup.js";
+import { extractGupshupMessageId, gupshupSubmitOk, templateParamsFromComponents } from "./gupshup-mapper.js";
 import { meta, MetaClient } from "./meta.js";
 
+export type WhatsAppProvider = "meta" | "evolution" | "gupshup";
 export type SendSource = "boleto" | "bot" | "agent" | "system";
 export type SendKind = "text" | "template" | "media" | "audio";
 export type SendCategory =
@@ -17,20 +20,23 @@ export type OutboundResult = {
   ok: boolean;
   externalId: string | null;
   error?: string;
-  provider: "meta" | "evolution";
+  provider: WhatsAppProvider;
   logId?: string;
 };
 
-export async function activeProvider(): Promise<"meta" | "evolution"> {
+export async function activeProvider(): Promise<WhatsAppProvider> {
   const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
   const fromDb = (row?.provider || "").trim().toLowerCase();
-  if (fromDb === "meta" || fromDb === "evolution") return fromDb;
-  return env.WHATSAPP_PROVIDER === "meta" ? "meta" : "evolution";
+  if (fromDb === "meta" || fromDb === "evolution" || fromDb === "gupshup") return fromDb;
+  if (env.WHATSAPP_PROVIDER === "meta") return "meta";
+  if (env.WHATSAPP_PROVIDER === "gupshup") return "gupshup";
+  return "evolution";
 }
 
 export async function messagingEnabled() {
   const p = await activeProvider();
   if (p === "meta") return meta.enabled;
+  if (p === "gupshup") return gupshup.isConfigured();
   return evolution.enabled;
 }
 
@@ -49,6 +55,8 @@ export async function sendOutbound(opts: {
     name: string;
     language?: string;
     components?: unknown[];
+    gupshupId?: string;
+    params?: string[];
   };
   media?: {
     mediatype: "image" | "document" | "audio" | "video";
@@ -73,7 +81,7 @@ export async function sendOutbound(opts: {
 }): Promise<OutboundResult> {
   const provider = await activeProvider();
   const rawPhone = (opts.to.includes("@") ? opts.to.split("@")[0] : opts.to).replace(/\D/g, "");
-  const phone = provider === "meta" ? MetaClient.toNumber(rawPhone) : rawPhone;
+  const phone = provider === "evolution" ? rawPhone : MetaClient.toNumber(rawPhone);
   const kind: SendKind =
     opts.kind ??
     (opts.template
@@ -86,9 +94,12 @@ export async function sendOutbound(opts: {
 
   const category: SendCategory =
     opts.category ??
-    (kind === "template" ? "utility" : provider === "meta" ? "service" : "free");
+    (kind === "template" ? "utility" : provider === "evolution" ? "free" : "service");
   const billable =
-    opts.billable ?? (provider === "meta" && category !== "free" && category !== "unknown");
+    opts.billable ??
+    ((provider === "meta" || provider === "gupshup") &&
+      category !== "free" &&
+      category !== "unknown");
 
   const log = await prisma.whatsAppSendLog.create({
     data: {
@@ -153,6 +164,88 @@ export async function sendOutbound(opts: {
 
       const externalId = MetaClient.extractMessageId(r.data);
       if (!r.ok) {
+        const error = `HTTP ${r.status}: ${r.text.slice(0, 500)}`;
+        await prisma.whatsAppSendLog.update({
+          where: { id: log.id },
+          data: { status: "failed", error, externalId },
+        });
+        return { ok: false, externalId, error, provider, logId: log.id };
+      }
+      await prisma.whatsAppSendLog.update({
+        where: { id: log.id },
+        data: { status: "sent", externalId },
+      });
+      return { ok: true, externalId, provider, logId: log.id };
+    }
+
+    if (provider === "gupshup") {
+      if (!(await gupshup.isConfigured())) {
+        await prisma.whatsAppSendLog.update({
+          where: { id: log.id },
+          data: { status: "failed", error: "Gupshup não configurada" },
+        });
+        return {
+          ok: false,
+          externalId: null,
+          error: "Gupshup não configurada",
+          provider,
+          logId: log.id,
+        };
+      }
+
+      let r;
+      if (opts.template) {
+        const templateId = (opts.template.gupshupId || opts.template.name || "").trim();
+        const params =
+          opts.template.params ?? templateParamsFromComponents(opts.template.components);
+        if (!templateId) {
+          const err = "GUPSHUP_BOLETO_TEMPLATE_ID / template.gupshupId ausente";
+          await prisma.whatsAppSendLog.update({
+            where: { id: log.id },
+            data: { status: "failed", error: err },
+          });
+          return { ok: false, externalId: null, error: err, provider, logId: log.id };
+        }
+        r = await gupshup.sendTemplate({ to: phone, templateId, params });
+      } else if (opts.media) {
+        let url = toPublicMediaUrl(opts.media.link);
+        if (!url && opts.media.base64) {
+          const local = persistBase64Upload({
+            base64: opts.media.base64,
+            fileName: opts.media.fileName,
+            mimetype: opts.media.mimetype,
+          });
+          url = toPublicMediaUrl(local);
+        }
+        if (!url) {
+          const err = "Gupshup mídia exige URL pública (API_PUBLIC_URL + /uploads)";
+          await prisma.whatsAppSendLog.update({
+            where: { id: log.id },
+            data: { status: "failed", error: err },
+          });
+          return { ok: false, externalId: null, error: err, provider, logId: log.id };
+        }
+        const mt = opts.media.mediatype;
+        if (mt === "audio") r = await gupshup.sendAudio({ to: phone, url });
+        else if (mt === "video") {
+          r = await gupshup.sendVideo({ to: phone, url, caption: opts.media.caption });
+        } else if (mt === "document") {
+          r = await gupshup.sendFile({
+            to: phone,
+            url,
+            filename: opts.media.fileName,
+            caption: opts.media.caption,
+          });
+        } else {
+          r = await gupshup.sendImage({ to: phone, url, caption: opts.media.caption });
+        }
+      } else {
+        r = await gupshup.sendText(phone, opts.text ?? "");
+      }
+
+      const externalId = extractGupshupMessageId(r.data);
+      const ok = gupshupSubmitOk(r.data, r.ok);
+      if (!ok) {
         const error = `HTTP ${r.status}: ${r.text.slice(0, 500)}`;
         await prisma.whatsAppSendLog.update({
           where: { id: log.id },
@@ -284,6 +377,31 @@ export async function applyMetaStatus(opts: {
       category: category ?? undefined,
       pricingType: pricingType ?? undefined,
       billable,
+      error: opts.error ? opts.error.slice(0, 1000) : undefined,
+      deliveredAt: status === "delivered" || status === "read" ? new Date() : row.deliveredAt,
+    },
+  });
+}
+
+/** Atualiza log a partir de message-event Gupshup (gsId / id). */
+export async function applyGupshupStatus(opts: {
+  ids: string[];
+  status: string;
+  error?: string | null;
+}) {
+  const ids = opts.ids.map((id) => id.trim()).filter(Boolean);
+  if (!ids.length) return null;
+  const row = await prisma.whatsAppSendLog.findFirst({
+    where: { externalId: { in: ids } },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!row) return null;
+
+  const status = opts.status || row.status;
+  return prisma.whatsAppSendLog.update({
+    where: { id: row.id },
+    data: {
+      status,
       error: opts.error ? opts.error.slice(0, 1000) : undefined,
       deliveredAt: status === "delivered" || status === "read" ? new Date() : row.deliveredAt,
     },

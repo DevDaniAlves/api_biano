@@ -287,18 +287,23 @@ model WhatsAppFlow {
   updatedAt       DateTime @updatedAt
 }
 
-/** Instância Evolution + provider Meta (singleton). */
+/** Instância Evolution + provider Meta/Gupshup (singleton). */
 model WhatsAppConnection {
-  id                 String   @id @default("default")
-  instanceName       String   @default("")
-  status             String   @default("disconnected")
-  lastQr             String?
-  lastPairingCode    String?
-  /** evolution | meta — sobrescreve WHATSAPP_PROVIDER do .env quando setado. */
-  provider           String   @default("evolution")
-  metaPhoneNumberId  String?
-  metaWabaId         String?
-  updatedAt          DateTime @updatedAt
+  id                   String    @id @default("default")
+  instanceName         String    @default("")
+  status               String    @default("disconnected")
+  lastQr               String?
+  lastPairingCode      String?
+  /** evolution | meta | gupshup — sobrescreve WHATSAPP_PROVIDER do .env quando setado. */
+  provider             String    @default("evolution")
+  metaPhoneNumberId    String?
+  metaWabaId           String?
+  gupshupAppName       String?
+  gupshupSource        String?
+  gupshupWabaId        String?
+  coexistenceEnabled   Boolean   @default(false)
+  connectedAt          DateTime?
+  updatedAt            DateTime  @updatedAt
 }
 
 model Product {

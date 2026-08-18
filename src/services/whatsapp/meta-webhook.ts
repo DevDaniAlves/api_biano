@@ -19,7 +19,7 @@ function brPhoneVariants(raw: string): { canonical: string; alt: string | null }
   return { canonical, alt };
 }
 
-async function resolveMetaContact(opts: {
+export async function resolveMetaContact(opts: {
   phone: string;
   profileName?: string | null;
   preview: string;

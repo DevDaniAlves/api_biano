@@ -481,7 +481,7 @@ async function markContactReadOnWhatsApp(contact: {
     if (provider === "meta") {
       const r = await meta.markAsRead(ids[0]);
       if (!r.ok) console.warn("[read/meta]", r.status, r.text.slice(0, 200));
-    } else {
+    } else if (provider === "evolution") {
       const r = await evolution.markMessagesAsRead(
         ids.map((id) => ({ remoteJid, id, fromMe: false }))
       );
@@ -616,7 +616,7 @@ export async function sendTextMessage(opts: {
     await assumeOnOpen(opts.contactId, opts.userId, role);
   }
 
-  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution ou Meta)");
+  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution, Meta ou Gupshup)");
 
   let quoted: {
     externalId: string;
@@ -712,7 +712,7 @@ export async function sendImageMessage(opts: {
   if (!alreadyMine && role !== "admin") {
     await assumeOnOpen(opts.contactId, opts.userId, role);
   }
-  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution ou Meta)");
+  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution, Meta ou Gupshup)");
 
   const mediatype = opts.mediatype ?? "image";
   const fallback =
@@ -916,7 +916,7 @@ export async function warnInactivity(contactId: string, userId: string) {
   });
 }
 
-async function handleRatingReply(contactId: string, body: string | null) {
+export async function handleRatingReply(contactId: string, body: string | null) {
   const match = body?.trim().match(/^[1-5]$/);
   if (!match) {
     const contact = await prisma.whatsAppContact.findUniqueOrThrow({

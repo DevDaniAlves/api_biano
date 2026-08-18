@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { env } from "../config.js";
 import { prisma } from "../db.js";
@@ -20,6 +20,9 @@ import { evolution, EvolutionClient } from "../services/whatsapp/evolution.js";
 import { activeProvider } from "../services/whatsapp/gateway.js";
 import { meta } from "../services/whatsapp/meta.js";
 import { getWhatsAppUsage, handleMetaWebhook } from "../services/whatsapp/meta-webhook.js";
+import { gupshup } from "../services/whatsapp/gupshup.js";
+import { handleGupshupWebhook } from "../services/whatsapp/gupshup-webhook.js";
+import { parseGupshupEnvelope, unwrapGupshupBodies } from "../services/whatsapp/gupshup-mapper.js";
 import {
   deletePushSubscription,
   getVapidPublicKey,
@@ -195,6 +198,38 @@ whatsappRouter.post("/webhook/meta", async (req, res) => {
   }
 });
 
+whatsappRouter.get("/webhook/gupshup", (req, res) => {
+  const expected = (env.GUPSHUP_WEBHOOK_SECRET || "").trim();
+  if (expected) {
+    const given = String(req.query.secret ?? req.query.token ?? "").trim();
+    if (given && given !== expected) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+  }
+  res.json({ ok: true });
+});
+
+whatsappRouter.post("/webhook/gupshup", async (req, res) => {
+  try {
+    const envelopes = unwrapGupshupBodies(req.body);
+    const first = envelopes[0] ? parseGupshupEnvelope(envelopes[0]) : null;
+    recordWebhookHit({
+      path: "/whatsapp/webhook/gupshup",
+      method: "POST",
+      ip: req.ip,
+      event: first?.envelopeType || "gupshup",
+      from: first?.phone || null,
+      preview: first?.body || first?.status || null,
+    });
+    res.json({ ok: true });
+    void handleGupshupWebhook(req.body).catch((err) => console.error("[webhook/gupshup]", err));
+  } catch (err) {
+    console.error("[webhook/gupshup]", err);
+    if (!res.headersSent) res.json({ ok: true });
+  }
+});
+
 /**
  * Redirect URI do Cadastro incorporado hospedado pela Meta (OAuth).
  * Colar na Meta: {API_PUBLIC_URL}/whatsapp/meta/embedded-signup
@@ -321,6 +356,30 @@ whatsappRouter.get("/meta/status", async (_req, res) => {
   }
 });
 
+whatsappRouter.get("/gupshup/status", async (_req, res) => {
+  try {
+    const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+    const provider = await activeProvider();
+    const creds = await gupshup.credentials();
+    const webhookUrl = `${env.API_PUBLIC_URL.replace(/\/+$/, "")}/whatsapp/webhook/gupshup`;
+    res.json({
+      provider,
+      configured: Boolean(creds.apiKey && creds.appName && creds.source),
+      appName: creds.appName || null,
+      source: creds.source || null,
+      wabaId: (row?.gupshupWabaId || "").trim() || null,
+      coexistenceEnabled: Boolean(row?.coexistenceEnabled),
+      connectedAt: row?.connectedAt ?? null,
+      webhookPath: "/whatsapp/webhook/gupshup",
+      webhookUrl,
+      boletoTemplateId: (env.GUPSHUP_BOLETO_TEMPLATE_ID || "").trim() || null,
+      webhookSecretSet: Boolean((env.GUPSHUP_WEBHOOK_SECRET || "").trim()),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 const DEFAULT_BOLETO_BODY =
   "Olá {{1}}, tudo bem?\n\nPassando para lembrar que sua parcela de R$ {{2}} vence em {{3}}.\n\nPara consultar e pagar, acesse o link a seguir e entre com CPF e data de nascimento:\n{{4}}\n\nCaso já tenha efetuado o pagamento, por favor desconsidere esta mensagem.\n\nAtenciosamente,\nCalangus Moda Jovem";
 
@@ -417,11 +476,11 @@ whatsappRouter.delete("/meta/templates/:name", async (req, res) => {
   }
 });
 
-whatsappRouter.post("/meta/provider", async (req, res) => {
+async function setWhatsAppProvider(req: Request, res: Response) {
   try {
     const provider = String(req.body?.provider ?? "").trim().toLowerCase();
-    if (provider !== "meta" && provider !== "evolution") {
-      res.status(400).json({ error: "provider deve ser meta ou evolution" });
+    if (provider !== "meta" && provider !== "evolution" && provider !== "gupshup") {
+      res.status(400).json({ error: "provider deve ser meta, evolution ou gupshup" });
       return;
     }
     if (provider === "meta" && !env.META_ACCESS_TOKEN) {
@@ -430,16 +489,47 @@ whatsappRouter.post("/meta/provider", async (req, res) => {
       });
       return;
     }
+    if (provider === "gupshup" && !(await gupshup.isConfigured())) {
+      res.status(400).json({
+        error: "Gupshup não configurada (GUPSHUP_API_KEY, GUPSHUP_APP_NAME, GUPSHUP_SOURCE no .env)",
+      });
+      return;
+    }
+    const creds = provider === "gupshup" ? await gupshup.credentials() : null;
     const row = await prisma.whatsAppConnection.upsert({
       where: { id: "default" },
-      create: { id: "default", provider },
-      update: { provider },
+      create: {
+        id: "default",
+        provider,
+        ...(creds
+          ? {
+              gupshupAppName: creds.appName,
+              gupshupSource: creds.source,
+              coexistenceEnabled: true,
+              connectedAt: new Date(),
+            }
+          : {}),
+      },
+      update: {
+        provider,
+        ...(creds
+          ? {
+              gupshupAppName: creds.appName,
+              gupshupSource: creds.source,
+              coexistenceEnabled: true,
+              connectedAt: new Date(),
+            }
+          : {}),
+      },
     });
     res.json({ ok: true, provider: row.provider });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
-});
+}
+
+whatsappRouter.post("/meta/provider", setWhatsAppProvider);
+whatsappRouter.post("/provider", setWhatsAppProvider);
 
 whatsappRouter.post("/meta/exchange", async (req, res) => {
   try {
