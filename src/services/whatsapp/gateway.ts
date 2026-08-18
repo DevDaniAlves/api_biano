@@ -234,7 +234,7 @@ export async function sendOutbound(opts: {
               console.log("[gupshup] audio preparado", uploadMime, uploadName);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              const errOut = `Áudio: conversão WebM→OGG falhou (${msg}). WhatsApp exige ogg/mp4/mpeg.`;
+                const errOut = `Áudio: conversão para OGG Opus falhou (${msg}).`;
               console.error("[gupshup] audio prepare", msg);
               await prisma.whatsAppSendLog.update({
                 where: { id: log.id },
@@ -280,6 +280,7 @@ export async function sendOutbound(opts: {
         const cap = opts.media.caption;
         if (mt === "audio") {
           r = await gupshup.sendAudio({ to: phone, url });
+          console.log("[gupshup] send audio", r.status, (r.text || "").slice(0, 200));
         } else if (mt === "video") {
           r = await gupshup.sendVideo({ to: phone, url, caption: cap });
         } else if (mt === "document") {

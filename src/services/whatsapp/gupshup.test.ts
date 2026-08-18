@@ -13,7 +13,7 @@ import {
   unwrapGupshupBodies,
 } from "./gupshup-mapper.js";
 import { isInternalMediaUrl, isUnreachableMediaUrl } from "./gupshup.js";
-import { isWebmAudio, normalizeGupshupAudioMime } from "./gupshup-audio.js";
+import { isWebmAudio, needsOggConversion, normalizeGupshupAudioMime } from "./gupshup-audio.js";
 
 describe("gupshup mapper outbound", () => {
   it("monta texto, imagem, arquivo e template oficiais", () => {
@@ -86,6 +86,9 @@ describe("gupshup mapper outbound", () => {
     assert.equal(normalizeGupshupAudioMime("audio/mp4", "gravacao.m4a"), "audio/mp4");
     assert.equal(isWebmAudio("audio/webm"), true);
     assert.equal(isWebmAudio("audio/ogg; codecs=opus", "x.ogg"), false);
+    assert.equal(needsOggConversion("audio/mp4", "audio.m4a"), true);
+    assert.equal(needsOggConversion("audio/webm"), true);
+    assert.equal(needsOggConversion("audio/ogg; codecs=opus", "voz.ogg"), false);
   });
 
   it("converte botão Meta em quick_reply da Access API", () => {
