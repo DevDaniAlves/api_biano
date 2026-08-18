@@ -67,13 +67,26 @@ export function toPublicMediaUrl(link?: string | null): string | null {
   return `${base}${p}`;
 }
 
-/** URL do próprio Railway/API — o Gupshup não consegue baixar (1010 Invalid Media URL). */
-export function isInternalMediaUrl(url?: string | null): boolean {
+/** URL que a Gupshup não consegue baixar (localhost / rede privada). */
+export function isUnreachableMediaUrl(url?: string | null): boolean {
   const raw = (url || "").trim();
-  if (!raw) return false;
-  const base = env.API_PUBLIC_URL.replace(/\/+$/, "").toLowerCase();
-  if (base && raw.toLowerCase().startsWith(`${base}/`)) return true;
-  return raw.startsWith("/uploads/");
+  if (!raw) return true;
+  const full = raw.startsWith("/") ? toPublicMediaUrl(raw) : raw;
+  if (!full) return true;
+  try {
+    const u = new URL(full);
+    const host = u.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+    if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(host)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** @deprecated use isUnreachableMediaUrl */
+export function isInternalMediaUrl(url?: string | null): boolean {
+  return isUnreachableMediaUrl(url);
 }
 
 export function persistBase64Upload(opts: {
@@ -92,6 +105,22 @@ export function persistBase64Upload(opts: {
     opts.fileName
   )}`;
   fs.writeFileSync(path.join(dir, name), buf);
+  return `/uploads/${name}`;
+}
+
+export function persistBufferUpload(opts: {
+  buffer: Buffer;
+  fileName?: string;
+  mimetype?: string;
+}): string | null {
+  if (opts.buffer.length < 40) return null;
+  const dir = uploadsDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${mimeExt(
+    opts.mimetype,
+    opts.fileName
+  )}`;
+  fs.writeFileSync(path.join(dir, name), opts.buffer);
   return `/uploads/${name}`;
 }
 

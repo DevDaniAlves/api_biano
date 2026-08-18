@@ -12,7 +12,7 @@ import {
   templateParamsFromComponents,
   unwrapGupshupBodies,
 } from "./gupshup-mapper.js";
-import { isInternalMediaUrl } from "./gupshup.js";
+import { isInternalMediaUrl, isUnreachableMediaUrl } from "./gupshup.js";
 import { isWebmAudio, normalizeGupshupAudioMime } from "./gupshup-audio.js";
 
 describe("gupshup mapper outbound", () => {
@@ -64,9 +64,11 @@ describe("gupshup mapper outbound", () => {
     assert.equal(extractGupshupMessageId({ status: "submitted", messageId: "msg-99xx" }), "msg-99xx");
   });
 
-  it("detecta URL interna do Railway", () => {
-    assert.equal(isInternalMediaUrl("/uploads/foto.jpg"), true);
-    assert.equal(isInternalMediaUrl("https://cdn.example.com/a.jpg"), false);
+  it("detecta URL inacessível para Gupshup", () => {
+    assert.equal(isUnreachableMediaUrl("http://localhost:3333/uploads/foto.jpg"), true);
+    assert.equal(isUnreachableMediaUrl("https://apibiano-production.up.railway.app/uploads/foto.jpg"), false);
+    assert.equal(isUnreachableMediaUrl("https://gs-upload.gupshup.io/whatsapp/sample-media/png/sample01.png"), false);
+    assert.equal(isInternalMediaUrl("http://127.0.0.1/uploads/x.jpg"), true);
   });
 
   it("normaliza MIME de áudio para Gupshup", () => {
