@@ -11,6 +11,7 @@ import {
   gupshupSubmitOk,
   isRetryableStatus,
 } from "./gupshup-mapper.js";
+import { normalizeGupshupAudioMime } from "./gupshup-audio.js";
 
 export type GupshupSendResult = {
   ok: boolean;
@@ -48,6 +49,15 @@ function mimeExt(mimetype?: string | null, fileName?: string | null) {
   return "bin";
 }
 
+/** MIME para upload Gupshup (áudio exige codecs=opus no ogg). */
+export function normalizeGupshupUploadMime(mimetype?: string, fileName?: string): string {
+  const raw = (mimetype || "").trim().toLowerCase();
+  if (raw.startsWith("audio/") || fileName?.match(/\.(ogg|webm|mp3|m4a|mp4|aac|amr)$/i)) {
+    return normalizeGupshupAudioMime(mimetype, fileName);
+  }
+  return (mimetype || "application/octet-stream").split(";")[0].trim();
+}
+
 export function toPublicMediaUrl(link?: string | null): string | null {
   const raw = (link || "").trim();
   if (!raw) return null;
@@ -55,6 +65,15 @@ export function toPublicMediaUrl(link?: string | null): string | null {
   const base = env.API_PUBLIC_URL.replace(/\/+$/, "");
   const p = raw.startsWith("/") ? raw : `/${raw}`;
   return `${base}${p}`;
+}
+
+/** URL do próprio Railway/API — o Gupshup não consegue baixar (1010 Invalid Media URL). */
+export function isInternalMediaUrl(url?: string | null): boolean {
+  const raw = (url || "").trim();
+  if (!raw) return false;
+  const base = env.API_PUBLIC_URL.replace(/\/+$/, "").toLowerCase();
+  if (base && raw.toLowerCase().startsWith(`${base}/`)) return true;
+  return raw.startsWith("/uploads/");
 }
 
 export function persistBase64Upload(opts: {
@@ -201,13 +220,17 @@ export class GupshupClient {
     fileName?: string;
   }): Promise<string | null> {
     const c = await this.credentials();
-    if (!this.apiKey || !c.appId || opts.buffer.length < 40) return null;
+    if (!this.apiKey || opts.buffer.length < 40) return null;
+    if (!c.appId) {
+      console.error("[gupshup] media upload ignorado: GUPSHUP_APP_ID ausente (env ou Admin → Conectar WhatsApp)");
+      return null;
+    }
 
-    const mime = (opts.mimetype || "application/octet-stream").split(";")[0].trim();
+    const mime = normalizeGupshupUploadMime(opts.mimetype, opts.fileName);
     const name = opts.fileName || `media.${mimeExt(mime, opts.fileName)}`;
     const form = new FormData();
     form.append("file_type", mime);
-    form.append("file", new Blob([Uint8Array.from(opts.buffer)], { type: mime }), name);
+    form.append("file", new Blob([Uint8Array.from(opts.buffer)], { type: mime.split(";")[0].trim() }), name);
 
     const headers: Record<string, string> = { token: this.apiKey };
     if (this.apiKey.startsWith("sk_")) headers.Authorization = this.apiKey;

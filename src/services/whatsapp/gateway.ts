@@ -1,7 +1,8 @@
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { evolution, EvolutionClient } from "./evolution.js";
-import { gupshup, persistBase64Upload, toPublicMediaUrl } from "./gupshup.js";
+import { gupshup, isInternalMediaUrl, persistBase64Upload, toPublicMediaUrl } from "./gupshup.js";
+import { prepareGupshupAudioUpload } from "./gupshup-audio.js";
 import { extractGupshupMessageId, gupshupSubmitOk, templateParamsFromComponents } from "./gupshup-mapper.js";
 import { meta, MetaClient } from "./meta.js";
 
@@ -218,12 +219,36 @@ export async function sendOutbound(opts: {
         let mediaId: string | null = null;
         if (opts.media.base64) {
           const raw = opts.media.base64.replace(/^data:[^;]+;base64,/, "");
-          const buf = Buffer.from(raw, "base64");
+          let buf = Buffer.from(raw, "base64");
+          let uploadMime = opts.media.mimetype;
+          let uploadName = opts.media.fileName;
           if (buf.length >= 40) {
+            if (opts.media.mediatype === "audio") {
+              try {
+                const prep = await prepareGupshupAudioUpload({
+                  buffer: buf,
+                  mimetype: uploadMime,
+                  fileName: uploadName,
+                });
+                buf = Buffer.from(prep.buffer);
+                uploadMime = prep.mimetype;
+                uploadName = prep.fileName;
+                console.log("[gupshup] audio preparado", uploadMime, uploadName);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const errOut = `Áudio: conversão WebM→OGG falhou (${msg}). WhatsApp exige ogg/mp4/mpeg.`;
+                console.error("[gupshup] audio prepare", msg);
+                await prisma.whatsAppSendLog.update({
+                  where: { id: log.id },
+                  data: { status: "failed", error: errOut },
+                });
+                return { ok: false, externalId: null, error: errOut, provider, logId: log.id };
+              }
+            }
             mediaId = await gupshup.uploadPartnerMedia({
               buffer: buf,
-              mimetype: opts.media.mimetype,
-              fileName: opts.media.fileName,
+              mimetype: uploadMime,
+              fileName: uploadName,
             });
           }
           if (!url) {
@@ -244,6 +269,21 @@ export async function sendOutbound(opts: {
           return { ok: false, externalId: null, error: err, provider, logId: log.id };
         }
         const mt = opts.media.mediatype;
+        if (!mediaId && isInternalMediaUrl(url)) {
+          const err =
+            "Gupshup não aceita URL do Railway para mídia. Configure GUPSHUP_APP_ID no Railway e faça redeploy (upload → mediaId).";
+          console.error("[gupshup] mídia bloqueada:", mt, url?.slice(0, 80));
+          await prisma.whatsAppSendLog.update({
+            where: { id: log.id },
+            data: { status: "failed", error: err },
+          });
+          return { ok: false, externalId: null, error: err, provider, logId: log.id };
+        }
+        console.log(
+          "[gupshup] mídia",
+          mt,
+          mediaId ? `mediaId=${mediaId.slice(0, 16)}…` : `url=${(url || "").slice(0, 72)}`
+        );
         const cap = opts.media.caption;
         if (mt === "audio") {
           r = await gupshup.sendAudio({ to: phone, url: url ?? undefined, mediaId: mediaId ?? undefined });

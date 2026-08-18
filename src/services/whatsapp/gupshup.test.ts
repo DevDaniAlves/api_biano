@@ -12,6 +12,8 @@ import {
   templateParamsFromComponents,
   unwrapGupshupBodies,
 } from "./gupshup-mapper.js";
+import { isInternalMediaUrl } from "./gupshup.js";
+import { isWebmAudio, normalizeGupshupAudioMime } from "./gupshup-audio.js";
 
 describe("gupshup mapper outbound", () => {
   it("monta texto, imagem, arquivo e template oficiais", () => {
@@ -60,6 +62,19 @@ describe("gupshup mapper outbound", () => {
     assert.equal(gupshupSubmitOk({ status: "submitted", messageId: "abc1234" }, true), true);
     assert.equal(gupshupSubmitOk({ status: "error", message: "fail" }, true), false);
     assert.equal(extractGupshupMessageId({ status: "submitted", messageId: "msg-99xx" }), "msg-99xx");
+  });
+
+  it("detecta URL interna do Railway", () => {
+    assert.equal(isInternalMediaUrl("/uploads/foto.jpg"), true);
+    assert.equal(isInternalMediaUrl("https://cdn.example.com/a.jpg"), false);
+  });
+
+  it("normaliza MIME de áudio para Gupshup", () => {
+    assert.equal(normalizeGupshupAudioMime("audio/ogg"), "audio/ogg; codecs=opus");
+    assert.equal(normalizeGupshupAudioMime("audio/webm;codecs=opus"), "audio/webm");
+    assert.equal(normalizeGupshupAudioMime("audio/mp4", "gravacao.m4a"), "audio/mp4");
+    assert.equal(isWebmAudio("audio/webm"), true);
+    assert.equal(isWebmAudio("audio/ogg; codecs=opus", "x.ogg"), false);
   });
 
   it("converte botão Meta em quick_reply da Access API", () => {
