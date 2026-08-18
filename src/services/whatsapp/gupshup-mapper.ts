@@ -143,12 +143,13 @@ function interactiveChoiceId(
     : isObj(nested.list_reply)
       ? nested.list_reply
       : {};
-  const id =
-    str(inner.id) ||
+  const postback =
     str(inner.postbackText) ||
     str(inner.postback) ||
     str(button.id) ||
     str(list.id);
+  const rawId = str(inner.id);
+  const id = postback || (rawId && rawId.toLowerCase() !== "list" ? rawId : "");
   if (id) return id;
   const title = str(button.title || list.title || inner.title || inner.text);
   const t = title.trim().toLowerCase();
@@ -307,6 +308,7 @@ export function parseGupshupEnvelope(raw: Record<string, unknown>): ParsedGupshu
   } else if (
     messageType === "button_reply" ||
     messageType === "list_reply" ||
+    messageType === "list" ||
     messageType === "interactive"
   ) {
     body =

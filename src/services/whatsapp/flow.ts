@@ -4,7 +4,6 @@ import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
 import { gupshup } from "./gupshup.js";
-import { waTitle } from "./gupshup-mapper.js";
 import {
   BUSINESS,
   isBusinessHours,
@@ -462,7 +461,7 @@ export async function sendDepartmentMenu(contactId: string, bodyText = DEPT_BODY
   );
 }
 
-/** Menu de vendedores / fila (nível 2). */
+/** Menu de vendedores / fila (nível 2): texto numerado (mais estável que lista interativa). */
 export async function sendSellersMenu(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
@@ -470,22 +469,7 @@ export async function sendSellersMenu(contactId: string) {
   const flow = await getFlow();
   const options = await resolveMenuOptions();
   const text = `${buildMenuText(flow.welcomeMessage, options)}\n${BACK_HINT}`;
-  const rows = [
-    ...options.map((o) => ({
-      id: o.key,
-      title: waTitle(o.label),
-    })),
-    { id: "0", title: "Voltar" },
-  ].slice(0, 10);
-  const interactive = {
-    type: "list",
-    body: { text: waTitle(flow.welcomeMessage, 1024) || "Escolha o atendente:" },
-    action: {
-      button: "Ver opções",
-      sections: [{ title: "Atendimento", rows }],
-    },
-  };
-  const externalId = await botSendInteractive(contact, text, interactive);
+  const externalId = await botSend(contact, text);
   await persistIfSent(
     contactId,
     text,

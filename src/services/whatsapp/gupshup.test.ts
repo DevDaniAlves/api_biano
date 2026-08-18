@@ -216,5 +216,16 @@ describe("gupshup webhook mapper", () => {
       },
     });
     assert.equal(byTitle.body, "2");
+    const listType = parseGupshupEnvelope({
+      type: "message",
+      payload: {
+        id: "wamid.LIST2",
+        source: "5566992838885",
+        type: "list",
+        payload: { id: "list", title: "neiliane", postbackText: "1" },
+        sender: { phone: "5566992838885" },
+      },
+    });
+    assert.equal(listType.body, "1");
   });
 });
