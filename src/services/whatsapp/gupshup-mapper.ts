@@ -164,6 +164,56 @@ export function waTitle(s: string, max = 20) {
   return t.slice(0, max);
 }
 
+/** Converte interactive Meta (button/list) para o JSON da Access API (`/wa/api/v1/msg`). */
+export function buildAccessInteractiveMessage(interactive: Record<string, unknown>): string {
+  const type = str(interactive.type).toLowerCase();
+  const bodyObj = isObj(interactive.body) ? interactive.body : {};
+  const bodyText = str(bodyObj.text);
+  const action = isObj(interactive.action) ? interactive.action : {};
+
+  if (type === "list") {
+    const sections = Array.isArray(action.sections) ? action.sections : [];
+    const items = sections.map((sec) => {
+      const s = isObj(sec) ? sec : {};
+      const rows = Array.isArray(s.rows) ? s.rows : [];
+      return {
+        title: waTitle(str(s.title) || "Opções", 24),
+        options: rows.map((row) => {
+          const r = isObj(row) ? row : {};
+          return {
+            type: "text",
+            title: waTitle(str(r.title), 24),
+            postbackText: str(r.id) || str(r.title),
+          };
+        }),
+      };
+    });
+    return JSON.stringify({
+      type: "list",
+      title: waTitle(bodyText, 60) || "Menu",
+      body: bodyText,
+      msgid: "list",
+      globalButtons: [{ type: "text", title: waTitle(str(action.button) || "Ver opções", 20) }],
+      items,
+    });
+  }
+
+  const buttons = Array.isArray(action.buttons) ? action.buttons : [];
+  const options = buttons.slice(0, 3).map((b) => {
+    const btn = isObj(b) ? b : {};
+    const reply = isObj(btn.reply) ? btn.reply : {};
+    return {
+      title: waTitle(str(reply.title), 20),
+      postbackText: str(reply.id) || str(reply.title),
+    };
+  });
+  return JSON.stringify({
+    type: "quick_reply",
+    content: { type: "text", text: bodyText },
+    options,
+  });
+}
+
 function senderOf(payload: Record<string, unknown>): Record<string, unknown> {
   return isObj(payload.sender) ? payload.sender : {};
 }

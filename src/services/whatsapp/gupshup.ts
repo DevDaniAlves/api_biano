@@ -4,6 +4,7 @@ import path from "node:path";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import {
+  buildAccessInteractiveMessage,
   buildSessionMessage,
   buildTemplateJson,
   extractGupshupMessageId,
@@ -100,7 +101,8 @@ export class GupshupClient {
       (env.GUPSHUP_SOURCE || "").trim() ||
       (row?.gupshupSource || "").trim()
     ).replace(/\D/g, "");
-    const appId = (env.GUPSHUP_APP_ID || "").trim();
+    const appId =
+      (env.GUPSHUP_APP_ID || "").trim() || (row?.gupshupAppId || "").trim();
     return { apiKey: this.apiKey, appName, source, appId };
   }
 
@@ -192,89 +194,7 @@ export class GupshupClient {
     return last;
   }
 
-  /** Apps FBC/Live (Settings → App ID + API key do app). */
-  private async postFbc(to: string, payload: Record<string, unknown>): Promise<GupshupSendResult> {
-    const appId = (env.GUPSHUP_APP_ID || "").trim();
-    if (!this.apiKey || !appId) {
-      return {
-        ok: false,
-        status: 0,
-        data: null,
-        text: "Gupshup FBC: defina GUPSHUP_API_KEY (Settings do app) e GUPSHUP_APP_ID",
-      };
-    }
-    const urls = [
-      `https://partner.gupshup.io/partner/app/${appId}/v3/message`,
-      `${this.baseUrl}/wa/app/${appId}/v3/message`,
-    ];
-    const body = JSON.stringify({
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to,
-      ...payload,
-    });
-    let last: GupshupSendResult = { ok: false, status: 0, data: null, text: "sem resposta" };
-    for (const url of urls) {
-      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-        try {
-          const res = await fetch(url, {
-            method: "POST",
-            headers: {
-              Authorization: this.apiKey,
-              "Content-Type": "application/json",
-              "Cache-Control": "no-cache",
-            },
-            body,
-            signal: AbortSignal.timeout(TIMEOUT_MS),
-          });
-          const text = await res.text().catch(() => "");
-          let data: unknown = null;
-          try {
-            data = text ? JSON.parse(text) : null;
-          } catch {
-            data = text;
-          }
-          last = { ok: res.ok, status: res.status, data, text };
-          if (res.ok) return last;
-          if (!isRetryableStatus(res.status)) break;
-          if (attempt < MAX_ATTEMPTS - 1) {
-            await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          last = { ok: false, status: 0, data: null, text: msg };
-          if (attempt < MAX_ATTEMPTS - 1) {
-            await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
-            continue;
-          }
-        }
-      }
-    }
-    console.error(
-      "[gupshup] fbc/v3",
-      last.status,
-      last.text.slice(0, 400),
-      "appId=",
-      appId,
-      "to=",
-      to
-    );
-    return last;
-  }
-
-  private async sendSession(
-    to: string,
-    formMessage: string,
-    fbcPayload: Record<string, unknown>
-  ): Promise<GupshupSendResult> {
-    if ((env.GUPSHUP_APP_ID || "").trim()) {
-      return this.postFbc(to, fbcPayload);
-    }
-    if (this.apiKey.startsWith("sk_")) {
-      console.warn(
-        "[gupshup] key do Settings (sk_) sem GUPSHUP_APP_ID — app FBC não usa /wa/api/v1/msg"
-      );
-    }
+  private async sendSession(to: string, formMessage: string): Promise<GupshupSendResult> {
     const fields = await this.sessionFields(to, formMessage);
     return this.postForm("/wa/api/v1/msg", fields);
   }
@@ -291,10 +211,7 @@ export class GupshupClient {
   }
 
   async sendText(to: string, text: string): Promise<GupshupSendResult> {
-    return this.sendSession(to, buildSessionMessage({ kind: "text", text }), {
-      type: "text",
-      text: { body: text },
-    });
+    return this.sendSession(to, buildSessionMessage({ kind: "text", text }));
   }
 
   async sendImage(opts: {
@@ -304,11 +221,7 @@ export class GupshupClient {
   }): Promise<GupshupSendResult> {
     return this.sendSession(
       opts.to,
-      buildSessionMessage({ kind: "image", url: opts.url, caption: opts.caption }),
-      {
-        type: "image",
-        image: { link: opts.url, ...(opts.caption ? { caption: opts.caption } : {}) },
-      }
+      buildSessionMessage({ kind: "image", url: opts.url, caption: opts.caption })
     );
   }
 
@@ -325,23 +238,12 @@ export class GupshupClient {
         url: opts.url,
         filename: opts.filename,
         caption: opts.caption,
-      }),
-      {
-        type: "document",
-        document: {
-          link: opts.url,
-          filename: opts.filename || "file",
-          ...(opts.caption ? { caption: opts.caption } : {}),
-        },
-      }
+      })
     );
   }
 
   async sendAudio(opts: { to: string; url: string }): Promise<GupshupSendResult> {
-    return this.sendSession(opts.to, buildSessionMessage({ kind: "audio", url: opts.url }), {
-      type: "audio",
-      audio: { link: opts.url },
-    });
+    return this.sendSession(opts.to, buildSessionMessage({ kind: "audio", url: opts.url }));
   }
 
   async sendVideo(opts: {
@@ -351,11 +253,7 @@ export class GupshupClient {
   }): Promise<GupshupSendResult> {
     return this.sendSession(
       opts.to,
-      buildSessionMessage({ kind: "video", url: opts.url, caption: opts.caption }),
-      {
-        type: "video",
-        video: { link: opts.url, ...(opts.caption ? { caption: opts.caption } : {}) },
-      }
+      buildSessionMessage({ kind: "video", url: opts.url, caption: opts.caption })
     );
   }
 
@@ -364,21 +262,6 @@ export class GupshupClient {
     templateId: string;
     params: string[];
   }): Promise<GupshupSendResult> {
-    if ((env.GUPSHUP_APP_ID || "").trim()) {
-      return this.postFbc(opts.to, {
-        type: "template",
-        template: {
-          name: opts.templateId,
-          language: { code: "pt_BR" },
-          components: [
-            {
-              type: "body",
-              parameters: opts.params.map((text) => ({ type: "text", text })),
-            },
-          ],
-        },
-      });
-    }
     const c = await this.credentials();
     return this.postForm("/wa/api/v1/template/msg", {
       channel: "whatsapp",
@@ -390,15 +273,7 @@ export class GupshupClient {
   }
 
   async sendInteractive(to: string, interactive: Record<string, unknown>): Promise<GupshupSendResult> {
-    if ((env.GUPSHUP_APP_ID || "").trim()) {
-      return this.postFbc(to, { type: "interactive", interactive });
-    }
-    const bodyObj = interactive.body;
-    const body =
-      bodyObj && typeof bodyObj === "object" && "text" in bodyObj
-        ? String((bodyObj as { text?: unknown }).text ?? "")
-        : "";
-    return this.sendText(to, body);
+    return this.sendSession(to, buildAccessInteractiveMessage(interactive));
   }
 
   static extractMessageId(data: unknown): string | null {

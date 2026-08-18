@@ -301,6 +301,7 @@ model WhatsAppConnection {
   gupshupAppName       String?
   gupshupSource        String?
   gupshupWabaId        String?
+  gupshupAppId         String?
   coexistenceEnabled   Boolean   @default(false)
   connectedAt          DateTime?
   updatedAt            DateTime  @updatedAt

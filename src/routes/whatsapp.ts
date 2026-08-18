@@ -365,6 +365,7 @@ whatsappRouter.get("/gupshup/status", async (_req, res) => {
     res.json({
       provider,
       configured: Boolean(creds.apiKey && creds.source && (creds.appId || creds.appName)),
+      buttonsEnabled: Boolean(creds.appId),
       appName: creds.appName || null,
       appId: creds.appId || null,
       source: creds.source || null,
@@ -376,6 +377,24 @@ whatsappRouter.get("/gupshup/status", async (_req, res) => {
       boletoTemplateId: (env.GUPSHUP_BOLETO_TEMPLATE_ID || "").trim() || null,
       webhookSecretSet: Boolean((env.GUPSHUP_WEBHOOK_SECRET || "").trim()),
     });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/gupshup/settings", async (req, res) => {
+  try {
+    const appId = String(req.body?.appId ?? "").trim();
+    if (!appId) {
+      res.status(400).json({ error: "App ID obrigatório (Settings do app Gupshup)" });
+      return;
+    }
+    const row = await prisma.whatsAppConnection.upsert({
+      where: { id: "default" },
+      create: { id: "default", gupshupAppId: appId },
+      update: { gupshupAppId: appId },
+    });
+    res.json({ ok: true, appId: row.gupshupAppId });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -506,6 +525,7 @@ async function setWhatsAppProvider(req: Request, res: Response) {
           ? {
               gupshupAppName: creds.appName,
               gupshupSource: creds.source,
+              ...(creds.appId ? { gupshupAppId: creds.appId } : {}),
               coexistenceEnabled: true,
               connectedAt: new Date(),
             }
@@ -517,6 +537,7 @@ async function setWhatsAppProvider(req: Request, res: Response) {
           ? {
               gupshupAppName: creds.appName,
               gupshupSource: creds.source,
+              ...(creds.appId ? { gupshupAppId: creds.appId } : {}),
               coexistenceEnabled: true,
               connectedAt: new Date(),
             }

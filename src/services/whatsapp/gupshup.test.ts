@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  buildAccessInteractiveMessage,
   buildSessionMessage,
   buildTemplateJson,
   extractGupshupMessageId,
@@ -52,6 +53,49 @@ describe("gupshup mapper outbound", () => {
     assert.equal(gupshupSubmitOk({ status: "submitted", messageId: "abc1234" }, true), true);
     assert.equal(gupshupSubmitOk({ status: "error", message: "fail" }, true), false);
     assert.equal(extractGupshupMessageId({ status: "submitted", messageId: "msg-99xx" }), "msg-99xx");
+  });
+
+  it("converte botão Meta em quick_reply da Access API", () => {
+    const msg = JSON.parse(
+      buildAccessInteractiveMessage({
+        type: "button",
+        body: { text: "Escolha o setor:" },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "1", title: "Atendimento" } },
+            { type: "reply", reply: { id: "2", title: "Financeiro" } },
+          ],
+        },
+      })
+    );
+    assert.equal(msg.type, "quick_reply");
+    assert.equal(msg.content.text, "Escolha o setor:");
+    assert.equal(msg.options[0].postbackText, "1");
+    assert.equal(msg.options[1].title, "Financeiro");
+  });
+
+  it("converte lista Meta em list da Access API", () => {
+    const msg = JSON.parse(
+      buildAccessInteractiveMessage({
+        type: "list",
+        body: { text: "Escolha o atendente:" },
+        action: {
+          button: "Ver opções",
+          sections: [
+            {
+              title: "Atendimento",
+              rows: [
+                { id: "1", title: "Ana" },
+                { id: "0", title: "Voltar" },
+              ],
+            },
+          ],
+        },
+      })
+    );
+    assert.equal(msg.type, "list");
+    assert.equal(msg.globalButtons[0].title, "Ver opções");
+    assert.equal(msg.items[0].options[1].postbackText, "0");
   });
 });
 

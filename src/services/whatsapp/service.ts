@@ -424,7 +424,7 @@ export async function listMessages(
   }
   const messages = await prisma.whatsAppMessage.findMany({
     where: { contactId },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ createdAt: "asc" }, { direction: "asc" }],
     include: { sentBy: { select: { id: true, name: true } } },
   });
   const missing = messages.filter(
@@ -439,6 +439,26 @@ export async function listMessages(
     for (let i = 0; i < messages.length; i++) {
       const next = byId.get(messages[i].id);
       if (next) messages[i] = next as typeof messages[number];
+    }
+  }
+  messages.sort((a, b) => {
+    const t = a.createdAt.getTime() - b.createdAt.getTime();
+    if (t !== 0) return t;
+    if (a.direction === b.direction) return 0;
+    return a.direction === "in" ? -1 : 1;
+  });
+  let swapped = true;
+  while (swapped) {
+    swapped = false;
+    for (let i = 0; i < messages.length - 1; i++) {
+      const a = messages[i];
+      const b = messages[i + 1];
+      const dt = b.createdAt.getTime() - a.createdAt.getTime();
+      if (a.direction === "out" && !a.sentById && b.direction === "in" && dt >= 0 && dt <= 20_000) {
+        messages[i] = b;
+        messages[i + 1] = a;
+        swapped = true;
+      }
     }
   }
   return {
@@ -982,6 +1002,9 @@ export async function handleRatingReply(contactId: string, body: string | null) 
 
 /** Webhook Evolution MESSAGES_UPSERT */
 export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
+  if ((await activeProvider()) !== "evolution") {
+    return;
+  }
   let data = (payload.data ?? payload) as Record<string, unknown> | unknown[];
   if (Array.isArray(data)) data = (data[0] ?? {}) as Record<string, unknown>;
   if (data && typeof data === "object" && Array.isArray((data as { messages?: unknown[] }).messages)) {

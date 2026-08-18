@@ -7,6 +7,7 @@ import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 import { processInboundBot } from "./flow.js";
 import { applyGupshupStatus } from "./gateway.js";
 import { parseGupshupEnvelope, unwrapGupshupBodies, type ParsedGupshup } from "./gupshup-mapper.js";
+import { gupshup } from "./gupshup.js";
 import { resolveMetaContact } from "./meta-webhook.js";
 import { handleRatingReply, UPLOADS_DIR } from "./service.js";
 
@@ -52,6 +53,13 @@ async function downloadGupshupMedia(
 
 async function applyInboundMessage(parsed: ParsedGupshup) {
   if (!parsed.phone) return;
+  const ourSource = (
+    (env.GUPSHUP_SOURCE || "").trim() ||
+    (await gupshup.credentials()).source
+  ).replace(/\D/g, "");
+  if (ourSource && parsed.phone.replace(/\D/g, "") === ourSource) {
+    return;
+  }
   let mediaUrl = parsed.mediaUrl;
   if (mediaUrl && /^https?:\/\//i.test(mediaUrl)) {
     mediaUrl =
@@ -84,12 +92,6 @@ async function applyInboundMessage(parsed: ParsedGupshup) {
           },
         });
       }
-      if (
-        !contact.webhookPaused &&
-        (contact.status === "bot" || contact.status === "closed")
-      ) {
-        await processInboundBot(contact.id, parsed.body, contact.status === "closed" || isNew);
-      }
       return;
     }
   }
@@ -104,6 +106,7 @@ async function applyInboundMessage(parsed: ParsedGupshup) {
         mediaUrl,
         externalId: parsed.externalId,
         quotedExternalId: parsed.quotedExternalId,
+        createdAt: new Date(),
       },
     });
   } catch (err) {

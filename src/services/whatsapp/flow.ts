@@ -3,6 +3,7 @@ import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
+import { gupshup } from "./gupshup.js";
 import { waTitle } from "./gupshup-mapper.js";
 import {
   BUSINESS,
@@ -40,7 +41,7 @@ const BACK_HINT = "0 - Voltar";
 async function canUseOfficialButtons() {
   const p = await activeProvider();
   if (p === "meta") return true;
-  if (p === "gupshup") return Boolean((env.GUPSHUP_APP_ID || "").trim());
+  if (p === "gupshup") return await gupshup.isConfigured();
   return false;
 }
 
@@ -330,6 +331,14 @@ async function persistBotOut(
       }
     }
   } else {
+    const lastIn = await prisma.whatsAppMessage.findFirst({
+      where: { contactId, direction: "in" },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true },
+    });
+    const createdAt = lastIn
+      ? new Date(Math.max(Date.now(), lastIn.createdAt.getTime()) + 50)
+      : new Date();
     await prisma.whatsAppMessage.create({
       data: {
         contactId,
@@ -337,6 +346,7 @@ async function persistBotOut(
         type: "text",
         body: text,
         externalId: externalId || null,
+        createdAt,
       },
     });
   }
@@ -417,6 +427,19 @@ export async function sendDepartmentMenu(contactId: string, bodyText = DEPT_BODY
     where: { id: contactId },
   });
   const preview = `${bodyText}\n\n1 - Atendimento\n2 - Financeiro`;
+  const recentMenu = await prisma.whatsAppMessage.findFirst({
+    where: {
+      contactId,
+      direction: "out",
+      body: preview,
+      createdAt: { gte: new Date(Date.now() - 45_000) },
+    },
+    select: { id: true },
+  });
+  if (recentMenu) {
+    console.log("[bot] menu departamento já enviado, skip", contact.phone);
+    return;
+  }
   const interactive = {
     type: "button",
     body: { text: bodyText },
