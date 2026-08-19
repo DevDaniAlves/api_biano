@@ -3,20 +3,22 @@ import { env } from "../config.js";
 import { prisma } from "../db.js";
 import { adminRequired, authRequired } from "../services/auth.js";
 import { createCatalogLead } from "../services/whatsapp/flow.js";
+import { buildWaMeLink } from "../services/wa-link.js";
 
 export const catalogRouter = Router();
 
+function businessPhone(): string {
+  return (env.WHATSAPP_BUSINESS_PHONE ?? "").replace(/\D/g, "");
+}
+
 /** Público: config de contato + produtos ativos. */
 catalogRouter.get("/config", (_req, res) => {
-  const phone = (env.WHATSAPP_BUSINESS_PHONE ?? "").replace(/\D/g, "");
+  const phone = businessPhone();
   const keyword = env.CATALOG_WA_KEYWORD;
   const mode = env.CATALOG_CONTACT_MODE;
   const preview =
     `Olá! Vim pelo catálogo da Calangus Moda Jovem e gostaria de falar com um vendedor.\n\n${keyword}`;
-  const waLink =
-    mode === "wa_me" && phone
-      ? `https://wa.me/${phone}?text=${encodeURIComponent(preview)}`
-      : null;
+  const waLink = mode === "wa_me" && phone ? buildWaMeLink(phone, preview) : null;
   res.json({ mode, waLink, keyword, phone: phone || null });
 });
 
