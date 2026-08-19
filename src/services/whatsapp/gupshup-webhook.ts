@@ -9,6 +9,7 @@ import { applyGupshupStatus } from "./gateway.js";
 import { parseGupshupEnvelope, unwrapGupshupBodies, type ParsedGupshup } from "./gupshup-mapper.js";
 import { gupshup } from "./gupshup.js";
 import { resolveMetaContact } from "./meta-webhook.js";
+import { contactDisplayName } from "./contacts.js";
 import { handleRatingReply, UPLOADS_DIR } from "./service.js";
 
 function mimeExt(mimetype?: string | null, type?: string, fileName?: string | null) {
@@ -141,7 +142,7 @@ async function applyInboundMessage(parsed: ParsedGupshup) {
   }
 
   const preview = parsed.body.slice(0, 120);
-  const who = fresh.name || fresh.phone;
+  const who = contactDisplayName(fresh);
   if (fresh.status === "human" && fresh.assignedToId) {
     notifyUsersSafe([fresh.assignedToId], {
       title: who,

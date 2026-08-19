@@ -35,6 +35,7 @@ import {
   getWhatsAppReports,
   handleEvolutionWebhook,
   listContacts,
+  saveContactName,
   listMessages,
   resolveContact,
   seedDemoReports,
@@ -843,6 +844,29 @@ whatsappRouter.post("/contacts/webhook-pause", async (req, res) => {
     res.json(await setWebhookPaused(contactId, Boolean(req.body?.paused)));
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/contacts/save-name", async (req, res) => {
+  try {
+    const contactId = String(req.body?.contactId ?? "");
+    const name = String(req.body?.name ?? "");
+    if (!contactId) {
+      res.status(400).json({ error: "contactId obrigatório" });
+      return;
+    }
+    res.json(
+      await saveContactName({
+        contactId,
+        name,
+        userId: req.user!.id,
+        role: req.user!.role as "admin" | "seller",
+      })
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = msg.includes("não encontrado") ? 404 : msg.includes("Informe") ? 400 : 500;
+    res.status(code).json({ error: msg });
   }
 });
 

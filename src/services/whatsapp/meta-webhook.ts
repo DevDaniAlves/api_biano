@@ -67,20 +67,22 @@ export async function resolveMetaContact(opts: {
   }
 
   const isNew = !contact;
+  const profileName = opts.profileName?.trim() || null;
   if (!contact) {
     contact = await prisma.whatsAppContact.create({
       data: {
         phone: canonical,
-        name: opts.profileName || canonical,
+        pushName: profileName,
+        name: profileName || canonical,
         status: "bot",
         lastMessageAt: new Date(),
         lastMessagePreview: opts.preview.slice(0, 120),
       },
     });
-  } else if (opts.profileName && (!contact.name || contact.name === contact.phone)) {
+  } else if (profileName) {
     contact = await prisma.whatsAppContact.update({
       where: { id: contact.id },
-      data: { name: opts.profileName },
+      data: { pushName: profileName },
     });
   }
 

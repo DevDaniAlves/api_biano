@@ -191,7 +191,12 @@ model WhatsAppContact {
   id                   String            @id @default(cuid())
   phone                String            @unique
   remoteJid            String?
+  /** @deprecated legado — preferir savedName/pushName; exibição usa savedName ?? pushName ?? name */
   name                 String?
+  /** Nome definido pelo atendente na plataforma */
+  savedName            String?
+  /** Nome de perfil vindo do WhatsApp (push name) */
+  pushName             String?
   status               ContactStatus     @default(bot)
   botMenuStep          BotMenuStep       @default(department)
   assignedToId         String?

@@ -14,11 +14,13 @@ import {
   processInboundBot,
   setWebhookPaused,
 } from "./flow.js";
+import { contactDisplayName, saveContactSavedName, serializeContact } from "./contacts.js";
 import { assumeMetricStart } from "./schedule.js";
 
 export const UPLOADS_DIR = path.resolve(env.UPLOADS_DIR || path.join(process.cwd(), "uploads"));
 
-export { listContactsForUser, assumeOnOpen, expireStaleRatings };
+export { listContactsForUser, assumeOnOpen, expireStaleRatings } from "./flow.js";
+export { saveContactSavedName } from "./contacts.js";
 
 const RATING_MSG =
   "Como foi o atendimento? Responda com uma nota de *1* a *5* (sendo 5 excelente). Obrigado!";
@@ -390,6 +392,11 @@ export function contactFlags(contact: {
   };
 }
 
+export async function saveContactName(opts: Parameters<typeof saveContactSavedName>[0]) {
+  const contact = await saveContactSavedName(opts);
+  return { ...contact, ...contactFlags(contact) };
+}
+
 export async function listContacts(opts: {
   userId: string;
   role: "admin" | "seller";
@@ -399,7 +406,7 @@ export async function listContacts(opts: {
 }) {
   const contacts = await listContactsForUser(opts);
   return contacts.map((c) => ({
-    ...c,
+    ...serializeContact(c),
     ...contactFlags(c),
   }));
 }
@@ -463,10 +470,10 @@ export async function listMessages(
   }
   return {
     contact: {
-      ...contact,
+      ...serializeContact(contact),
       ...contactFlags(contact),
     },
-    messages: withQuotedPayload(messages, contact.name || contact.phone),
+    messages: withQuotedPayload(messages, contactDisplayName(contact)),
     readOnly: contact.status === "closed" || contact.status === "awaiting_rating",
   };
 }
@@ -1096,6 +1103,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     create: {
       phone,
       remoteJid,
+      pushName: fromMe ? null : pushName,
       name: fromMe ? null : pushName,
       status: "bot",
       webhookPaused: fromMe,
@@ -1106,7 +1114,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
     },
     update: {
       remoteJid,
-      ...(!fromMe && pushName ? { name: pushName } : {}),
+      ...(!fromMe && pushName ? { pushName } : {}),
       lastMessageAt: new Date(),
       lastMessagePreview: (body ?? "").slice(0, 120),
       ...(!fromMe
@@ -1183,7 +1191,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
 
     const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contact.id } });
     const preview = (body ?? "[mensagem]").slice(0, 120);
-    const who = fresh.name || fresh.phone;
+    const who = contactDisplayName(fresh);
 
     if (fresh.webhookPaused) return;
 

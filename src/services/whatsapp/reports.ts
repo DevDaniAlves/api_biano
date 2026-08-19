@@ -1,4 +1,5 @@
 import { prisma } from "../../db.js";
+import { contactDisplayName } from "./contacts.js";
 import { nowInSaoPaulo } from "./schedule.js";
 
 function startOfDaySP(d: Date): Date {
@@ -332,7 +333,7 @@ export async function getWhatsAppReports(opts: {
     recentRatings: rated.slice(0, 30).map((r) => ({
       rating: r.rating,
       sellerName: r.assignedTo?.name ?? null,
-      contactName: r.name,
+      contactName: contactDisplayName(r),
       phone: r.phone,
       at: r.updatedAt,
     })),

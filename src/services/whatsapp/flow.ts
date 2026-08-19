@@ -13,6 +13,7 @@ import {
   assumeMetricStart,
   nowInSaoPaulo,
 } from "./schedule.js";
+import { contactDisplayName } from "./contacts.js";
 
 function asOptions(raw: unknown): FlowOption[] {
   return (raw as unknown as FlowOption[]) ?? [];
@@ -542,7 +543,7 @@ export async function offerToAgent(opts: {
   });
   notifyUsersSafe([opts.userId], {
     title: "Nova conversa na fila",
-    body: `${updated.name || updated.phone} está aguardando você`,
+    body: `${contactDisplayName(updated)} está aguardando você`,
     contactId: updated.id,
     tag: `wa-offer-${updated.id}`,
   });
@@ -580,7 +581,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
     void recipientIdsForOpenQueue(queueId).then((ids) => {
       notifyUsersSafe(ids, {
         title: "Conversa aberta",
-        body: `${updated.name || updated.phone} está aguardando atendimento`,
+        body: `${contactDisplayName(updated)} está aguardando atendimento`,
         contactId: updated.id,
         tag: `wa-open-${updated.id}`,
       });
@@ -625,7 +626,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
     void recipientIdsForOpenQueue(queueId).then((ids) => {
       notifyUsersSafe(ids, {
         title: "Conversa aberta",
-        body: `${updated.name || updated.phone} está aguardando atendimento`,
+        body: `${contactDisplayName(updated)} está aguardando atendimento`,
         contactId: updated.id,
         tag: `wa-open-${updated.id}`,
       });
@@ -799,7 +800,7 @@ export async function handleOutsideHours(contactId: string) {
   void recipientIdsForOpenQueue(updated.queueId).then((ids) => {
     notifyUsersSafe(ids, {
       title: "Nova conversa na fila",
-      body: `${updated.name || updated.phone} está aguardando atendimento`,
+      body: `${contactDisplayName(updated)} está aguardando atendimento`,
       contactId: updated.id,
       tag: `wa-open-${updated.id}`,
     });
@@ -885,7 +886,7 @@ export async function expireStaleOffers() {
     void recipientIdsForOpenQueue(c.queueId).then((ids) => {
       notifyUsersSafe(ids, {
         title: "Conversa aberta",
-        body: `${c.name || c.phone} ficou disponível para a equipe`,
+        body: `${contactDisplayName(c)} ficou disponível para a equipe`,
         contactId: c.id,
         tag: `wa-open-${c.id}`,
       });
@@ -918,7 +919,7 @@ export async function expireStaleRatings() {
     if (c.assignedToId) {
       notifyUsersSafe([c.assignedToId], {
         title: "Avaliação expirada",
-        body: `${c.name || c.phone} — conversa encerrada sem nota`,
+        body: `${contactDisplayName(c)} — conversa encerrada sem nota`,
         contactId: c.id,
         tag: `wa-rating-${c.id}`,
       });
@@ -1086,6 +1087,8 @@ export async function listContactsForUser(opts: {
   const baseSearch = opts.search
     ? {
         OR: [
+          { savedName: { contains: opts.search, mode: "insensitive" as const } },
+          { pushName: { contains: opts.search, mode: "insensitive" as const } },
           { name: { contains: opts.search, mode: "insensitive" as const } },
           { phone: { contains: opts.search.replace(/\D/g, "") } },
         ],
@@ -1151,6 +1154,8 @@ export async function createCatalogLead(opts: {
     where: { phone },
     create: {
       phone,
+      savedName: opts.name,
+      pushName: opts.name,
       name: opts.name,
       status: "waiting",
       lastMessageAt: now,
@@ -1161,6 +1166,8 @@ export async function createCatalogLead(opts: {
       queueId: queue?.id ?? null,
     },
     update: {
+      savedName: opts.name,
+      pushName: opts.name,
       name: opts.name,
       status: "waiting",
       lastMessageAt: now,
