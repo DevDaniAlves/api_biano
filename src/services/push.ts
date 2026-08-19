@@ -101,6 +101,10 @@ function urlForUser(role: string, contactId: string) {
     : `/atendimento?contact=${contactId}`;
 }
 
+function isApplePushEndpoint(endpoint: string) {
+  return endpoint.includes("web.push.apple.com");
+}
+
 export async function notifyUsers(userIds: string[], payload: PushPayload) {
   const ids = [...new Set(userIds.filter(Boolean))];
   if (ids.length === 0) return;
@@ -140,15 +144,28 @@ export async function notifyUsers(userIds: string[], payload: PushPayload) {
         badge: badgeByUser.get(sub.userId) ?? 1,
       });
       try {
-        await webpush.sendNotification(
+        const apple = isApplePushEndpoint(sub.endpoint);
+        const result = await webpush.sendNotification(
           {
             endpoint: sub.endpoint,
             keys: { p256dh: sub.p256dh, auth: sub.auth },
           },
-          body
+          body,
+          {
+            urgency: "high",
+            TTL: 86_400,
+            topic: payload.tag ?? `wa-${payload.contactId}`.slice(0, 32),
+          }
         );
+        if (apple) {
+          console.log("[push][apple] ok", sub.userId.slice(0, 8), result.statusCode);
+        }
       } catch (err) {
-        const status = (err as { statusCode?: number }).statusCode;
+        const status = (err as { statusCode?: number; body?: string }).statusCode;
+        const errBody = (err as { body?: string }).body;
+        if (isApplePushEndpoint(sub.endpoint)) {
+          console.error("[push][apple]", status ?? "", errBody ?? (err instanceof Error ? err.message : err));
+        }
         if (status === 404 || status === 410) {
           await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
           return;
