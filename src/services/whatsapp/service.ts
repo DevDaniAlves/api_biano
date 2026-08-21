@@ -474,7 +474,9 @@ export async function listMessages(
       ...contactFlags(contact),
     },
     messages: withQuotedPayload(messages, contactDisplayName(contact)),
-    readOnly: contact.status === "closed" || contact.status === "awaiting_rating",
+    readOnly:
+      (contact.status === "closed" || contact.status === "awaiting_rating") &&
+      !contact.webhookPaused,
   };
 }
 
@@ -641,7 +643,10 @@ export async function sendTextMessage(opts: {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: opts.contactId },
   });
-  if (contact.status === "closed" || contact.status === "awaiting_rating") {
+  if (
+    (contact.status === "closed" || contact.status === "awaiting_rating") &&
+    !contact.webhookPaused
+  ) {
     throw new Error("Conversa finalizada — somente leitura");
   }
 
@@ -739,7 +744,10 @@ export async function sendImageMessage(opts: {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: opts.contactId },
   });
-  if (contact.status === "closed" || contact.status === "awaiting_rating") {
+  if (
+    (contact.status === "closed" || contact.status === "awaiting_rating") &&
+    !contact.webhookPaused
+  ) {
     throw new Error("Conversa finalizada — somente leitura");
   }
   const role = opts.role ?? "seller";

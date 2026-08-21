@@ -377,12 +377,24 @@ async function persistBotOut(
 
 /** Admin: tira/coloca o cliente no atendimento manual (sem bot). */
 export async function setWebhookPaused(contactId: string, paused: boolean) {
+  const current = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+  });
   await prisma.whatsAppContact.update({
     where: { id: contactId },
     data: {
       webhookPaused: paused,
       ...(paused
         ? {
+            // Reabre conversa encerrada para atendimento manual pelo CRM.
+            ...(["closed", "awaiting_rating"].includes(current.status)
+              ? {
+                  status: "human" as const,
+                  rating: null,
+                  ratingAskedAt: null,
+                  assignedAt: current.assignedAt ?? new Date(),
+                }
+              : {}),
             offeredToId: null,
             offeredAt: null,
             openToAll: false,
