@@ -576,6 +576,37 @@ export async function offerToAgent(opts: {
   return updated;
 }
 
+/** Abre a conversa para qualquer vendedor da equipe (sem oferta exclusiva). */
+export async function openContactToAllSellers(opts: {
+  contactId: string;
+  queueId?: string | null;
+}) {
+  const now = new Date();
+  const updated = await prisma.whatsAppContact.update({
+    where: { id: opts.contactId },
+    data: {
+      status: "waiting",
+      queueId: opts.queueId ?? undefined,
+      openToAll: true,
+      offeredToId: null,
+      offeredAt: null,
+      openedToAllAt: now,
+      assignedToId: null,
+      assignedAt: null,
+      assumeWaitSeconds: null,
+    },
+  });
+  void recipientIdsForOpenQueue(opts.queueId ?? null).then((ids) => {
+    notifyUsersSafe(ids, {
+      title: "Conversa aberta",
+      body: `${contactDisplayName(updated)} está aguardando atendimento`,
+      contactId: updated.id,
+      tag: `wa-open-${updated.id}`,
+    });
+  });
+  return updated;
+}
+
 /** Fila sequencial: próximo agente disponível na ordem. */
 export async function offerFromQueue(contactId: string, queueId: string) {
   const queue = await prisma.whatsAppQueue.findUniqueOrThrow({
@@ -770,19 +801,14 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     const first = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
     queueId = first?.id ?? null;
   }
-  if (!queueId) {
-    const contact = await prisma.whatsAppContact.findUniqueOrThrow({
-      where: { id: contactId },
-    });
-    await botSend(contact, "No momento não há fila configurada. Aguarde um momento.");
-    return;
-  }
 
-  await offerFromQueue(contactId, queueId);
+  // "Não tenho preferência" → disponível para todos os vendedores na hora.
+  await openContactToAllSellers({ contactId, queueId });
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const msg = "Certo! Você entrou na fila de atendimento. Em breve um vendedor irá te atender.";
+  const msg =
+    "Certo! Você entrou na fila de atendimento. Em breve um vendedor irá te atender.";
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
 }
