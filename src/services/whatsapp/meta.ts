@@ -20,6 +20,16 @@ export type MetaMessageTemplate = {
   components?: unknown[];
 };
 
+export type MetaBusinessProfile = {
+  about: string;
+  address: string;
+  description: string;
+  email: string;
+  vertical: string;
+  websites: string[];
+  profilePictureUrl: string | null;
+};
+
 export class MetaClient {
   get enabled() {
     return Boolean(env.META_ACCESS_TOKEN);
@@ -290,6 +300,221 @@ export class MetaClient {
       type,
       [type]: payload,
     });
+  }
+
+  /** Lê o perfil comercial do número (Cloud API). */
+  async getBusinessProfile() {
+    const phoneNumberId = await this.resolvePhoneNumberId();
+    if (!phoneNumberId) {
+      return {
+        ok: false as const,
+        status: 0,
+        data: null,
+        text: "Phone Number ID ausente",
+        profile: null as MetaBusinessProfile | null,
+      };
+    }
+    const fields =
+      "about,address,description,email,profile_picture_url,websites,vertical";
+    const r = await this.graph(
+      "GET",
+      `/${encodeURIComponent(phoneNumberId)}/whatsapp_business_profile?fields=${fields}`
+    );
+    let profile: MetaBusinessProfile | null = null;
+    if (r.data && typeof r.data === "object") {
+      const list = (r.data as { data?: unknown[] }).data;
+      const row =
+        Array.isArray(list) && list[0] && typeof list[0] === "object"
+          ? (list[0] as Record<string, unknown>)
+          : (r.data as Record<string, unknown>);
+      if (row) {
+        const websites = Array.isArray(row.websites)
+          ? row.websites.map((w) => String(w)).filter(Boolean)
+          : [];
+        profile = {
+          about: row.about != null ? String(row.about) : "",
+          address: row.address != null ? String(row.address) : "",
+          description: row.description != null ? String(row.description) : "",
+          email: row.email != null ? String(row.email) : "",
+          vertical: row.vertical != null ? String(row.vertical) : "",
+          websites,
+          profilePictureUrl:
+            row.profile_picture_url != null ? String(row.profile_picture_url) : null,
+        };
+      }
+    }
+    return { ...r, profile };
+  }
+
+  /** Atualiza campos do perfil comercial (não inclui nome de exibição nem horário). */
+  async updateBusinessProfile(opts: {
+    about?: string;
+    address?: string;
+    description?: string;
+    email?: string;
+    vertical?: string;
+    websites?: string[];
+    profilePictureHandle?: string;
+  }) {
+    const phoneNumberId = await this.resolvePhoneNumberId();
+    if (!phoneNumberId) {
+      return { ok: false as const, status: 0, data: null, text: "Phone Number ID ausente" };
+    }
+    const body: Record<string, unknown> = { messaging_product: "whatsapp" };
+    if (opts.about != null) body.about = String(opts.about).slice(0, 139);
+    if (opts.address != null) body.address = String(opts.address).slice(0, 256);
+    if (opts.description != null) body.description = String(opts.description).slice(0, 512);
+    if (opts.email != null) body.email = String(opts.email).slice(0, 128);
+    if (opts.vertical != null) body.vertical = String(opts.vertical);
+    if (opts.websites) {
+      body.websites = opts.websites
+        .map((w) => String(w).trim())
+        .filter(Boolean)
+        .slice(0, 2);
+    }
+    if (opts.profilePictureHandle) {
+      body.profile_picture_handle = opts.profilePictureHandle;
+    }
+    return this.graph(
+      "POST",
+      `/${encodeURIComponent(phoneNumberId)}/whatsapp_business_profile`,
+      body
+    );
+  }
+
+  /**
+   * Upload resumável → handle para foto de perfil.
+   * https://developers.facebook.com/docs/graph-api/guides/upload
+   */
+  async uploadProfilePicture(file: Buffer, mimeType: string, fileName: string) {
+    const appId = (env.META_APP_ID || "").trim();
+    if (!appId || !env.META_ACCESS_TOKEN) {
+      return {
+        ok: false as const,
+        status: 0,
+        handle: null as string | null,
+        text: "META_APP_ID / META_ACCESS_TOKEN ausentes",
+      };
+    }
+    const startUrl = new URL(`${GRAPH}/${encodeURIComponent(appId)}/uploads`);
+    startUrl.searchParams.set("file_length", String(file.length));
+    startUrl.searchParams.set("file_type", mimeType || "image/jpeg");
+    startUrl.searchParams.set("file_name", fileName || "profile.jpg");
+    const startRes = await fetch(startUrl.toString(), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.META_ACCESS_TOKEN}` },
+    });
+    const startText = await startRes.text().catch(() => "");
+    let startData: unknown = null;
+    try {
+      startData = startText ? JSON.parse(startText) : null;
+    } catch {
+      startData = startText;
+    }
+    if (!startRes.ok) {
+      console.error("[meta] upload start", startRes.status, startText.slice(0, 400));
+      return {
+        ok: false as const,
+        status: startRes.status,
+        handle: null,
+        text: startText.slice(0, 500),
+      };
+    }
+    const sessionId =
+      startData && typeof startData === "object"
+        ? String((startData as { id?: string }).id ?? "")
+        : "";
+    if (!sessionId) {
+      return {
+        ok: false as const,
+        status: 0,
+        handle: null,
+        text: "Sessão de upload sem id",
+      };
+    }
+
+    const uploadRes = await fetch(`${GRAPH}/${encodeURIComponent(sessionId)}`, {
+      method: "POST",
+      headers: {
+        Authorization: `OAuth ${env.META_ACCESS_TOKEN}`,
+        file_offset: "0",
+        "Content-Type": mimeType || "application/octet-stream",
+      },
+      body: new Uint8Array(file),
+    });
+    const uploadText = await uploadRes.text().catch(() => "");
+    let uploadData: unknown = null;
+    try {
+      uploadData = uploadText ? JSON.parse(uploadText) : null;
+    } catch {
+      uploadData = uploadText;
+    }
+    if (!uploadRes.ok) {
+      console.error("[meta] upload file", uploadRes.status, uploadText.slice(0, 400));
+      return {
+        ok: false as const,
+        status: uploadRes.status,
+        handle: null,
+        text: uploadText.slice(0, 500),
+      };
+    }
+    const handle =
+      uploadData && typeof uploadData === "object"
+        ? String((uploadData as { h?: string }).h ?? "")
+        : "";
+    if (!handle) {
+      return {
+        ok: false as const,
+        status: 0,
+        handle: null,
+        text: "Upload sem handle (h)",
+      };
+    }
+    return { ok: true as const, status: uploadRes.status, handle, text: uploadText };
+  }
+
+  async getPhoneNumberInfo() {
+    const phoneNumberId = await this.resolvePhoneNumberId();
+    if (!phoneNumberId) {
+      return {
+        ok: false as const,
+        status: 0,
+        data: null,
+        text: "Phone Number ID ausente",
+        info: null as {
+          displayPhoneNumber: string | null;
+          verifiedName: string | null;
+          qualityRating: string | null;
+          status: string | null;
+        } | null,
+      };
+    }
+    const r = await this.graph(
+      "GET",
+      `/${encodeURIComponent(phoneNumberId)}?fields=display_phone_number,verified_name,quality_rating,code_verification_status,status`
+    );
+    let info: {
+      displayPhoneNumber: string | null;
+      verifiedName: string | null;
+      qualityRating: string | null;
+      status: string | null;
+    } | null = null;
+    if (r.data && typeof r.data === "object") {
+      const row = r.data as Record<string, unknown>;
+      info = {
+        displayPhoneNumber: row.display_phone_number
+          ? String(row.display_phone_number)
+          : null,
+        verifiedName: row.verified_name ? String(row.verified_name) : null,
+        qualityRating: row.quality_rating ? String(row.quality_rating) : null,
+        status: row.status
+          ? String(row.status)
+          : row.code_verification_status
+            ? String(row.code_verification_status)
+            : null,
+      };
+    }
+    return { ...r, info };
   }
 
   /** Troca code OAuth do Embedded Signup por access_token. */

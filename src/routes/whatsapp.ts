@@ -404,6 +404,150 @@ whatsappRouter.post("/gupshup/settings", async (req, res) => {
 const DEFAULT_BOLETO_BODY =
   "Olá {{1}}, tudo bem?\n\nPassando para lembrar que sua parcela de R$ {{2}} vence em {{3}}.\n\nPara consultar e pagar, acesse o link a seguir e entre com CPF e data de nascimento:\n{{4}}\n\nCaso já tenha efetuado o pagamento, por favor desconsidere esta mensagem.\n\nAtenciosamente,\nCalangus Moda Jovem";
 
+whatsappRouter.post("/meta/settings", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    const phoneNumberId = String(req.body?.phoneNumberId ?? "").trim();
+    const wabaId = String(req.body?.wabaId ?? "").trim();
+    if (!phoneNumberId && !wabaId) {
+      res.status(400).json({ error: "Informe phoneNumberId e/ou wabaId" });
+      return;
+    }
+    const row = await prisma.whatsAppConnection.upsert({
+      where: { id: "default" },
+      create: {
+        id: "default",
+        ...(phoneNumberId ? { metaPhoneNumberId: phoneNumberId } : {}),
+        ...(wabaId ? { metaWabaId: wabaId } : {}),
+      },
+      update: {
+        ...(phoneNumberId ? { metaPhoneNumberId: phoneNumberId } : {}),
+        ...(wabaId ? { metaWabaId: wabaId } : {}),
+      },
+    });
+    res.json({
+      ok: true,
+      phoneNumberId: row.metaPhoneNumberId,
+      wabaId: row.metaWabaId,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/meta/profile", async (_req, res) => {
+  try {
+    if (!meta.enabled) {
+      res.status(400).json({ error: "Meta não configurada (META_ACCESS_TOKEN)" });
+      return;
+    }
+    const [profileR, phoneR] = await Promise.all([
+      meta.getBusinessProfile(),
+      meta.getPhoneNumberInfo(),
+    ]);
+    if (!profileR.ok && profileR.status) {
+      res.status(profileR.status).json({
+        error: profileR.text.slice(0, 500),
+        profile: null,
+        phone: phoneR.info,
+      });
+      return;
+    }
+    res.json({
+      profile: profileR.profile,
+      phone: phoneR.info,
+      managerUrl:
+        "https://business.facebook.com/latest/whatsapp_manager/phone_numbers/?tab=phone-numbers",
+      note:
+        "Nome de exibição e horário de funcionamento só no WhatsApp Manager. Via API: foto, sobre, descrição, e-mail, endereço, categoria e sites.",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/meta/profile", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    if (!meta.enabled) {
+      res.status(400).json({ error: "Meta não configurada" });
+      return;
+    }
+    const websitesRaw = req.body?.websites;
+    const websites = Array.isArray(websitesRaw)
+      ? websitesRaw.map((w: unknown) => String(w).trim()).filter(Boolean)
+      : typeof websitesRaw === "string"
+        ? websitesRaw
+            .split(/[\n,]/)
+            .map((w) => w.trim())
+            .filter(Boolean)
+        : undefined;
+
+    const r = await meta.updateBusinessProfile({
+      about: req.body?.about != null ? String(req.body.about) : undefined,
+      address: req.body?.address != null ? String(req.body.address) : undefined,
+      description: req.body?.description != null ? String(req.body.description) : undefined,
+      email: req.body?.email != null ? String(req.body.email) : undefined,
+      vertical: req.body?.vertical != null ? String(req.body.vertical) : undefined,
+      websites,
+    });
+    if (!r.ok) {
+      res.status(r.status || 400).json({ error: r.text.slice(0, 500) });
+      return;
+    }
+    const refreshed = await meta.getBusinessProfile();
+    res.json({ ok: true, profile: refreshed.profile });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/meta/profile/picture", upload.single("file"), async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    if (!meta.enabled) {
+      res.status(400).json({ error: "Meta não configurada" });
+      return;
+    }
+    const file = req.file;
+    if (!file?.buffer && !file?.path) {
+      res.status(400).json({ error: "Envie a imagem no campo file" });
+      return;
+    }
+    const buf = file.buffer
+      ? Buffer.from(file.buffer)
+      : fs.readFileSync(file.path);
+    const mime = file.mimetype || "image/jpeg";
+    if (!mime.startsWith("image/")) {
+      res.status(400).json({ error: "Arquivo precisa ser imagem" });
+      return;
+    }
+    const up = await meta.uploadProfilePicture(buf, mime, file.originalname || "profile.jpg");
+    if (!up.ok || !up.handle) {
+      res.status(up.status || 400).json({ error: up.text || "Falha no upload" });
+      return;
+    }
+    const upd = await meta.updateBusinessProfile({ profilePictureHandle: up.handle });
+    if (!upd.ok) {
+      res.status(upd.status || 400).json({ error: upd.text.slice(0, 500) });
+      return;
+    }
+    const refreshed = await meta.getBusinessProfile();
+    res.json({ ok: true, profile: refreshed.profile });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 whatsappRouter.get("/meta/templates", async (_req, res) => {
   try {
     if (!meta.enabled) {
