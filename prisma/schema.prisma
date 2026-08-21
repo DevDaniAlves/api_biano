@@ -308,6 +308,8 @@ model WhatsAppConnection {
   gupshupWabaId        String?
   gupshupAppId         String?
   coexistenceEnabled   Boolean   @default(false)
+  /** Menus/respostas automáticas do CRM (departamento, vendedores, etc.). */
+  botEnabled           Boolean   @default(true)
   connectedAt          DateTime?
   updatedAt            DateTime  @updatedAt
 }

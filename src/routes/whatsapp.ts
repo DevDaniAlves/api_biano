@@ -10,6 +10,8 @@ import {
   getFlow,
   restartToBot,
   setWebhookPaused,
+  setCrmBotEnabled,
+  isCrmBotEnabled,
   type FlowOption,
 } from "../services/whatsapp/flow.js";
 import {
@@ -351,6 +353,7 @@ whatsappRouter.get("/meta/status", async (_req, res) => {
       webhookVerifyTokenSet: Boolean((env.META_WEBHOOK_VERIFY_TOKEN || "").trim()),
       boletoTemplate: env.META_BOLETO_TEMPLATE_NAME || null,
       boletoTemplateLang: env.META_BOLETO_TEMPLATE_LANG || "pt_BR",
+      botEnabled: row?.botEnabled !== false,
     });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -697,6 +700,31 @@ async function setWhatsAppProvider(req: Request, res: Response) {
 
 whatsappRouter.post("/meta/provider", setWhatsAppProvider);
 whatsappRouter.post("/provider", setWhatsAppProvider);
+
+whatsappRouter.post("/bot", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    if (typeof req.body?.enabled !== "boolean") {
+      res.status(400).json({ error: "Informe enabled: true|false" });
+      return;
+    }
+    const row = await setCrmBotEnabled(req.body.enabled);
+    res.json({ ok: true, botEnabled: row.botEnabled });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/bot", async (_req, res) => {
+  try {
+    res.json({ botEnabled: await isCrmBotEnabled() });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
 
 whatsappRouter.post("/meta/exchange", async (req, res) => {
   try {
@@ -1119,6 +1147,7 @@ whatsappRouter.get("/connection", async (req, res) => {
 
     res.json({
       ...row,
+      botEnabled: row.botEnabled !== false,
       credentialsOk: evolution.credentialsOk,
       defaultPhone: env.WHATSAPP_BUSINESS_PHONE ?? "",
       live,

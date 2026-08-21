@@ -15,6 +15,20 @@ import {
 } from "./schedule.js";
 import { contactDisplayName } from "./contacts.js";
 
+/** Menus/auto-respostas do CRM. Desligar em Conectar WhatsApp para testes manuais. */
+export async function isCrmBotEnabled() {
+  const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+  return row?.botEnabled !== false;
+}
+
+export async function setCrmBotEnabled(enabled: boolean) {
+  return prisma.whatsAppConnection.upsert({
+    where: { id: "default" },
+    create: { id: "default", botEnabled: enabled },
+    update: { botEnabled: enabled },
+  });
+}
+
 function asOptions(raw: unknown): FlowOption[] {
   return (raw as unknown as FlowOption[]) ?? [];
 }
@@ -809,6 +823,10 @@ export async function handleOutsideHours(contactId: string) {
 
 export async function processInboundBot(contactId: string, body: string | null, isNew: boolean) {
   return withContactLock(contactId, async () => {
+    if (!(await isCrmBotEnabled())) {
+      console.log("[bot] desativado — ignorando menus para", contactId);
+      return;
+    }
     const existing = await prisma.whatsAppContact.findUniqueOrThrow({
       where: { id: contactId },
     });
