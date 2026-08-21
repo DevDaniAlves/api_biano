@@ -1,7 +1,7 @@
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { applyMetaStatus } from "./gateway.js";
-import { MetaClient } from "./meta.js";
+import { MetaClient, meta } from "./meta.js";
 import { processInboundBot } from "./flow.js";
 
 /** BR: Meta manda wa_id com 12 dígitos; envio usa 13 com 9º — unificar no contato canônico. */
@@ -89,11 +89,44 @@ export async function resolveMetaContact(opts: {
   return { contact, isNew };
 }
 
-async function upsertInboundText(opts: {
+const MEDIA_TYPES = new Set(["image", "sticker", "audio", "video", "document"]);
+
+function mediaPlaceholder(type: string) {
+  if (type === "sticker") return "[figurinha]";
+  if (type === "audio") return "[áudio]";
+  if (type === "video") return "[vídeo]";
+  if (type === "document") return "[documento]";
+  if (type === "image") return "[imagem]";
+  return `[${type}]`;
+}
+
+function parseMetaMedia(m: Record<string, unknown>, type: string) {
+  const block = m[type];
+  if (!block || typeof block !== "object") {
+    return { mediaId: null as string | null, caption: null as string | null, fileName: null as string | null };
+  }
+  const b = block as {
+    id?: string;
+    caption?: string;
+    filename?: string;
+    mime_type?: string;
+  };
+  return {
+    mediaId: b.id ? String(b.id) : null,
+    caption: b.caption ? String(b.caption) : null,
+    fileName: b.filename ? String(b.filename) : null,
+  };
+}
+
+async function upsertInboundMessage(opts: {
   phone: string;
   body: string;
+  type: string;
   externalId: string;
   profileName?: string | null;
+  mediaUrl?: string | null;
+  /** ID da mídia Graph (para retry se o download falhar). */
+  metaMediaId?: string | null;
 }) {
   const { contact, isNew } = await resolveMetaContact({
     phone: opts.phone,
@@ -106,15 +139,36 @@ async function upsertInboundText(opts: {
     const existing = await prisma.whatsAppMessage.findUnique({
       where: { contactId_externalId: { contactId: contact.id, externalId: opts.externalId } },
     });
-    if (existing) return;
+    if (existing) {
+      if (
+        MEDIA_TYPES.has(opts.type) &&
+        opts.mediaUrl &&
+        (!existing.mediaUrl || existing.mediaUrl.startsWith("meta-media:"))
+      ) {
+        await prisma.whatsAppMessage.update({
+          where: { id: existing.id },
+          data: {
+            type: opts.type,
+            body: opts.body,
+            mediaUrl: opts.mediaUrl,
+          },
+        });
+      }
+      return;
+    }
   }
+
+  const mediaUrl =
+    opts.mediaUrl ||
+    (opts.metaMediaId ? `meta-media:${opts.metaMediaId}` : null);
 
   await prisma.whatsAppMessage.create({
     data: {
       contactId: contact.id,
       direction: "in",
-      type: "text",
+      type: opts.type,
       body: opts.body,
+      mediaUrl,
       externalId: opts.externalId || null,
     },
   });
@@ -124,10 +178,14 @@ async function upsertInboundText(opts: {
       lastMessageAt: new Date(),
       lastMessagePreview: opts.body.slice(0, 120),
       unreadCount: { increment: 1 },
+      lastClientMessageAt: new Date(),
     },
   });
 
-  await processInboundBot(contact.id, opts.body, isNew);
+  // Bot só processa texto / escolha de menu (caption de mídia não dispara menu).
+  if (opts.type === "text" || opts.type === "button" || opts.type === "interactive") {
+    await processInboundBot(contact.id, opts.body, isNew);
+  }
 }
 
 /** Processa payload webhook Cloud API (messages + statuses). */
@@ -186,34 +244,88 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
         const from = String(m.from ?? "").replace(/\D/g, "");
         const id = String(m.id ?? "");
         const type = String(m.type ?? "text");
-        let body = "";
+        if (!from || !id) continue;
+
         if (type === "text" && m.text && typeof m.text === "object") {
-          body = String((m.text as { body?: string }).body ?? "");
-        } else if (type === "button" && m.button && typeof m.button === "object") {
-          body = String((m.button as { text?: string }).text ?? "");
-        } else if (
-          type === "interactive" &&
-          m.interactive &&
-          typeof m.interactive === "object"
-        ) {
+          const body = String((m.text as { body?: string }).body ?? "");
+          if (!body) continue;
+          await upsertInboundMessage({
+            phone: from,
+            body,
+            type: "text",
+            externalId: id,
+            profileName: profileName || null,
+          });
+          continue;
+        }
+
+        if (type === "button" && m.button && typeof m.button === "object") {
+          const body = String((m.button as { text?: string }).text ?? "");
+          if (!body) continue;
+          await upsertInboundMessage({
+            phone: from,
+            body,
+            type: "button",
+            externalId: id,
+            profileName: profileName || null,
+          });
+          continue;
+        }
+
+        if (type === "interactive" && m.interactive && typeof m.interactive === "object") {
           const inter = m.interactive as {
             button_reply?: { id?: string; title?: string };
             list_reply?: { id?: string; title?: string };
           };
-          body = String(
+          const body = String(
             inter.button_reply?.id ??
               inter.list_reply?.id ??
               inter.button_reply?.title ??
               inter.list_reply?.title ??
               "[interactive]"
           );
-        } else {
-          body = `[${type}]`;
+          await upsertInboundMessage({
+            phone: from,
+            body,
+            type: "interactive",
+            externalId: id,
+            profileName: profileName || null,
+          });
+          continue;
         }
-        if (!from || !body) continue;
-        await upsertInboundText({
+
+        if (MEDIA_TYPES.has(type)) {
+          const crmType = type === "sticker" ? "sticker" : type;
+          const { mediaId, caption, fileName } = parseMetaMedia(m, type);
+          const body = caption?.trim() || mediaPlaceholder(crmType);
+          let mediaUrl: string | null = null;
+          if (mediaId) {
+            const saved = await meta.downloadMediaToUploads(mediaId, {
+              type: crmType,
+              fileName,
+            });
+            mediaUrl = saved?.localUrl ?? null;
+            if (!mediaUrl) {
+              console.warn("[meta] inbound media sem arquivo local", type, mediaId);
+            }
+          }
+          await upsertInboundMessage({
+            phone: from,
+            body,
+            type: crmType,
+            externalId: id,
+            profileName: profileName || null,
+            mediaUrl,
+            metaMediaId: mediaId,
+          });
+          continue;
+        }
+
+        // Outros tipos (reaction, location, contacts…) — placeholder texto.
+        await upsertInboundMessage({
           phone: from,
-          body,
+          body: mediaPlaceholder(type),
+          type: "text",
           externalId: id,
           profileName: profileName || null,
         });

@@ -595,6 +595,15 @@ async function hydrateMessageMedia<
     if (saved) return persist(saved);
   }
 
+  // Retry download Meta Cloud API (media id guardado quando o 1º download falhou).
+  if (msg.mediaUrl?.startsWith("meta-media:")) {
+    const mediaId = msg.mediaUrl.slice("meta-media:".length).trim();
+    if (mediaId) {
+      const saved = await meta.downloadMediaToUploads(mediaId, { type: msg.type });
+      if (saved?.localUrl) return persist(saved.localUrl);
+    }
+  }
+
   if (msg.externalId && evolution.enabled) {
     const r = await evolution.getBase64FromMedia({
       remoteJid: contact.remoteJid || `${contact.phone}@s.whatsapp.net`,

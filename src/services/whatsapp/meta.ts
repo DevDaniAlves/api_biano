@@ -81,6 +81,76 @@ export class MetaClient {
     return { ok: res.ok, status: res.status, data, text };
   }
 
+  /**
+   * Baixa mídia inbound (Cloud API): GET /{mediaId} → url → GET binário com Bearer.
+   * Retorna path público `/uploads/...` ou null.
+   */
+  async downloadMediaToUploads(
+    mediaId: string,
+    opts?: { type?: string; fileName?: string | null }
+  ): Promise<{ localUrl: string; mimeType: string | null } | null> {
+    const id = mediaId.trim();
+    if (!id || !env.META_ACCESS_TOKEN) return null;
+
+    const meta = await this.graph("GET", `/${encodeURIComponent(id)}`);
+    if (!meta.ok || !meta.data || typeof meta.data !== "object") {
+      console.error("[meta] media meta", id, meta.status, meta.text.slice(0, 200));
+      return null;
+    }
+    const row = meta.data as { url?: string; mime_type?: string };
+    const url = (row.url || "").trim();
+    if (!url) return null;
+
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${env.META_ACCESS_TOKEN}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        console.error("[meta] media download", res.status, url.slice(0, 80));
+        return null;
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 40) return null;
+
+      const mime = row.mime_type || res.headers.get("content-type") || null;
+      const type = opts?.type || "image";
+      const fromName = opts?.fileName?.split(".").pop()?.toLowerCase();
+      const ext =
+        fromName && /^[a-z0-9]{2,5}$/.test(fromName)
+          ? fromName
+          : (mime || "").includes("png")
+            ? "png"
+            : (mime || "").includes("webp")
+              ? "webp"
+              : (mime || "").includes("gif")
+                ? "gif"
+                : (mime || "").includes("pdf")
+                  ? "pdf"
+                  : (mime || "").includes("mp4") || type === "video"
+                    ? "mp4"
+                    : (mime || "").includes("ogg") ||
+                        (mime || "").includes("opus") ||
+                        type === "audio"
+                      ? "ogg"
+                      : type === "document"
+                        ? "bin"
+                        : "jpg";
+
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const crypto = await import("node:crypto");
+      const uploadsDir = path.resolve(env.UPLOADS_DIR || path.join(process.cwd(), "uploads"));
+      fs.mkdirSync(uploadsDir, { recursive: true });
+      const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}.${ext}`;
+      fs.writeFileSync(path.join(uploadsDir, name), buf);
+      return { localUrl: `/uploads/${name}`, mimeType: mime };
+    } catch (err) {
+      console.error("[meta] media download fail", err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
   async listMessageTemplates() {
     const wabaId = await this.resolveWabaId();
     if (!wabaId) {
