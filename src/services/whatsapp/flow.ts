@@ -558,7 +558,7 @@ export async function sendFinanceMenu(contactId: string) {
   });
   const options = await resolveMenuOptions("financeiro");
   const sellerLines = options.map((o) => `${o.key} - ${o.label}`);
-  const text = `${financeSelfServiceMessage()}\n\n${sellerLines.join("\n")}\n${BACK_HINT}`;
+  const text = `${financeSelfServiceMessage()}\n\nCaso ainda tenha dúvidas, entre em contato conosco:\n\n${sellerLines.join("\n")}\n${BACK_HINT}`;
   const externalId = await botSend(contact, text);
   await persistIfSent(
     contactId,
@@ -1134,6 +1134,93 @@ export async function expireStaleRatings() {
 }
 
 /**
+ * Após CLIENT_IDLE_CLOSE_MINUTES sem mensagem do cliente: fecha sem texto;
+ * próximo inbound reinicia no menu departamento.
+ */
+function clientIdleCutoffDate(): Date | null {
+  const minutes = env.CLIENT_IDLE_CLOSE_MINUTES;
+  if (minutes <= 0) return null;
+  return new Date(Date.now() - minutes * 60_000);
+}
+
+function isClientIdleExpired(contact: {
+  webhookPaused: boolean;
+  status: string;
+  lastClientMessageAt: Date | null;
+  updatedAt: Date;
+}): boolean {
+  const cutoff = clientIdleCutoffDate();
+  if (!cutoff) return false;
+  if (contact.webhookPaused) return false;
+  if (!["bot", "waiting", "human", "awaiting_rating"].includes(contact.status)) return false;
+  const last = contact.lastClientMessageAt ?? contact.updatedAt;
+  return last < cutoff;
+}
+
+function idleCloseResetData() {
+  return {
+    status: "closed" as const,
+    botMenuStep: "department" as const,
+    botFlow: null,
+    assignedToId: null,
+    assignedAt: null,
+    assumeWaitSeconds: null,
+    offeredToId: null,
+    offeredAt: null,
+    firstOfferedAt: null,
+    firstOfferedToId: null,
+    openedToAllAt: null,
+    openToAll: false,
+    queueId: null,
+    inactivityWarnedAt: null,
+    ratingAskedAt: null,
+    unreadCount: 0,
+  };
+}
+
+export async function closeContactForClientIdle(contactId: string) {
+  await prisma.whatsAppContact.update({
+    where: { id: contactId },
+    data: idleCloseResetData(),
+  });
+}
+
+/** Fecha se o cliente ficou inativo. Retorna true se fechou. */
+export async function maybeCloseForClientIdle(contactId: string): Promise<boolean> {
+  const contact = await prisma.whatsAppContact.findUnique({ where: { id: contactId } });
+  if (!contact || !isClientIdleExpired(contact)) return false;
+  await closeContactForClientIdle(contactId);
+  console.log(
+    `[idle] ${env.CLIENT_IDLE_CLOSE_MINUTES}min sem msg do cliente → closed: ${contact.phone}`
+  );
+  return true;
+}
+
+export async function expireClientIdleConversations() {
+  const cutoff = clientIdleCutoffDate();
+  if (!cutoff) return 0;
+  const stale = await prisma.whatsAppContact.findMany({
+    where: {
+      webhookPaused: false,
+      status: { in: ["bot", "waiting", "human", "awaiting_rating"] },
+      OR: [
+        { lastClientMessageAt: { lt: cutoff } },
+        { lastClientMessageAt: null, updatedAt: { lt: cutoff } },
+      ],
+    },
+    take: 200,
+  });
+
+  for (const c of stale) {
+    await closeContactForClientIdle(c.id);
+    console.log(
+      `[idle] cron ${env.CLIENT_IDLE_CLOSE_MINUTES}min sem cliente → closed: ${c.phone}`
+    );
+  }
+  return stale.length;
+}
+
+/**
  * Após IDLE_CLOSE_HOURS sem mensagem: fecha sem enviar texto e
  * devolve o número ao início do fluxo (próximo inbound = menu).
  */
@@ -1155,23 +1242,7 @@ export async function expireIdleConversations() {
   for (const c of stale) {
     await prisma.whatsAppContact.update({
       where: { id: c.id },
-      data: {
-        status: "closed",
-        botMenuStep: "department",
-        assignedToId: null,
-        assignedAt: null,
-        assumeWaitSeconds: null,
-        offeredToId: null,
-        offeredAt: null,
-        firstOfferedAt: null,
-        firstOfferedToId: null,
-        openedToAllAt: null,
-        openToAll: false,
-        queueId: null,
-        inactivityWarnedAt: null,
-        ratingAskedAt: null,
-        unreadCount: 0,
-      },
+      data: idleCloseResetData(),
     });
     console.log(`[idle] ${hours}h sem interação → closed (fluxo reset): ${c.phone}`);
   }

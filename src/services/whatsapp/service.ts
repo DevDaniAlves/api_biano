@@ -12,6 +12,7 @@ import {
   assumeOnOpen,
   expireStaleRatings,
   listContactsForUser,
+  maybeCloseForClientIdle,
   processInboundBot,
   setWebhookPaused,
 } from "./flow.js";
@@ -1151,6 +1152,11 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
 
   const assumir = fromMe ? takeAssumirCommand(body) : { assumed: false, cleaned: body };
   if (assumir.assumed) body = assumir.cleaned;
+
+  if (!fromMe) {
+    const prev = await prisma.whatsAppContact.findUnique({ where: { phone } });
+    if (prev) await maybeCloseForClientIdle(prev.id);
+  }
 
   const contact = await prisma.whatsAppContact.upsert({
     where: { phone },

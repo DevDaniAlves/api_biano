@@ -86,6 +86,8 @@ const schema = z.object({
   RATING_TIMEOUT_MINUTES: z.coerce.number().default(5),
   INACTIVITY_WARN_MINUTES: z.coerce.number().default(10),
   INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(15),
+  /** Minutos sem mensagem do cliente → fecha e reinicia o fluxo no próximo contato. 0 = desligado. */
+  CLIENT_IDLE_CLOSE_MINUTES: z.coerce.number().default(5),
   /** Horas sem mensagem (qualquer lado) para fechar a conversa sem enviar texto. */
   IDLE_CLOSE_HOURS: z.coerce.number().default(24),
   VAPID_PUBLIC_KEY: z.string().optional(),

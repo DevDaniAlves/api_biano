@@ -2,7 +2,7 @@ import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { applyMetaStatus } from "./gateway.js";
 import { MetaClient, meta } from "./meta.js";
-import { processInboundBot } from "./flow.js";
+import { processInboundBot, maybeCloseForClientIdle } from "./flow.js";
 import { contactDisplayName } from "./contacts.js";
 import { handleRatingReply } from "./service.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
@@ -138,6 +138,8 @@ async function upsertInboundMessage(opts: {
     preview: opts.body,
   });
   if (!contact) return;
+
+  await maybeCloseForClientIdle(contact.id);
 
   if (opts.externalId) {
     const existing = await prisma.whatsAppMessage.findUnique({

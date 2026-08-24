@@ -4,7 +4,7 @@ import path from "node:path";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
-import { processInboundBot } from "./flow.js";
+import { processInboundBot, maybeCloseForClientIdle } from "./flow.js";
 import { applyGupshupStatus } from "./gateway.js";
 import { parseGupshupEnvelope, unwrapGupshupBodies, type ParsedGupshup } from "./gupshup-mapper.js";
 import { gupshup } from "./gupshup.js";
@@ -73,6 +73,8 @@ async function applyInboundMessage(parsed: ParsedGupshup) {
     preview: parsed.body,
   });
   if (!contact) return;
+
+  await maybeCloseForClientIdle(contact.id);
 
   if (parsed.externalId) {
     const existing = await prisma.whatsAppMessage.findUnique({
