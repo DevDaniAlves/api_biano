@@ -38,6 +38,7 @@ import {
   getWhatsAppReports,
   handleEvolutionWebhook,
   listContacts,
+  openContactToAllSellers,
   saveContactName,
   listMessages,
   resolveContact,
@@ -113,7 +114,7 @@ whatsappRouter.post("/auth/login", async (req, res) => {
 whatsappRouter.get("/auth/me", authRequired, async (req, res) => {
   const row = await prisma.user.findUnique({
     where: { id: req.user!.id },
-    select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true },
+    select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true, showInAttendantList: true },
   });
   if (!row?.active) {
     res.status(401).json({ error: "Usuário inativo" });
@@ -126,6 +127,7 @@ whatsappRouter.get("/auth/me", authRequired, async (req, res) => {
       email: row.email,
       role: row.role,
       seeAllMessages: Boolean(row.seeAllMessages),
+      showInAttendantList: row.showInAttendantList !== false,
     },
   });
 });
@@ -1009,6 +1011,34 @@ whatsappRouter.post("/contacts/assign", async (req, res) => {
   }
 });
 
+whatsappRouter.post("/contacts/open-to-all", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin pode abrir conversa para todos" });
+      return;
+    }
+    const contactId = String(req.body?.contactId ?? "");
+    if (!contactId) {
+      res.status(400).json({ error: "contactId obrigatório" });
+      return;
+    }
+    await openContactToAllSellers({
+      contactId,
+      queueId: req.body?.queueId ?? undefined,
+    });
+    const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+      where: { id: contactId },
+      include: {
+        assignedTo: { select: { id: true, name: true } },
+        queue: { select: { id: true, name: true } },
+      },
+    });
+    res.json({ ...serializeContact(contact), ...contactFlags(contact) });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 whatsappRouter.post("/contacts/resolve", async (req, res) => {
   try {
     res.json(await resolveContact(String(req.body?.contactId ?? "")));
@@ -1545,7 +1575,15 @@ whatsappRouter.delete("/agents/:id", async (req, res) => {
 
 whatsappRouter.get("/users", async (_req, res) => {
   const users = await prisma.user.findMany({
-    select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      active: true,
+      seeAllMessages: true,
+      showInAttendantList: true,
+    },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
   res.json(users);
@@ -1561,10 +1599,18 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
       res.status(400).json({ error: "Você não pode desativar a si mesmo" });
       return;
     }
-    const data: { active?: boolean; name?: string; seeAllMessages?: boolean } = {};
+    const data: {
+      active?: boolean;
+      name?: string;
+      seeAllMessages?: boolean;
+      showInAttendantList?: boolean;
+    } = {};
     if (typeof req.body?.active === "boolean") data.active = req.body.active;
     if (typeof req.body?.seeAllMessages === "boolean") {
       data.seeAllMessages = req.body.seeAllMessages;
+    }
+    if (typeof req.body?.showInAttendantList === "boolean") {
+      data.showInAttendantList = req.body.showInAttendantList;
     }
     if (typeof req.body?.name === "string") {
       const name = req.body.name.trim();
@@ -1581,7 +1627,15 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
     const user = await prisma.user.update({
       where: { id: req.params.id },
       data,
-      select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        active: true,
+        seeAllMessages: true,
+        showInAttendantList: true,
+      },
     });
     res.json(user);
   } catch (err) {
@@ -1601,6 +1655,10 @@ whatsappRouter.post("/users", async (req, res) => {
       password: String(req.body?.password ?? ""),
       role: req.body?.role === "admin" ? "admin" : "seller",
       seeAllMessages: Boolean(req.body?.seeAllMessages),
+      showInAttendantList:
+        req.body?.showInAttendantList === undefined
+          ? true
+          : Boolean(req.body.showInAttendantList),
     });
     res.status(201).json({
       id: user.id,
@@ -1608,6 +1666,7 @@ whatsappRouter.post("/users", async (req, res) => {
       email: user.email,
       role: user.role,
       seeAllMessages: user.seeAllMessages,
+      showInAttendantList: user.showInAttendantList,
     });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

@@ -98,6 +98,7 @@ export async function createUser(data: {
   password: string;
   role?: "admin" | "seller";
   seeAllMessages?: boolean;
+  showInAttendantList?: boolean;
 }) {
   const passwordHash = await bcrypt.hash(data.password, 10);
   return prisma.user.create({
@@ -107,6 +108,8 @@ export async function createUser(data: {
       passwordHash,
       role: data.role ?? "seller",
       seeAllMessages: Boolean(data.seeAllMessages),
+      showInAttendantList:
+        data.showInAttendantList === undefined ? true : Boolean(data.showInAttendantList),
     },
   });
 }

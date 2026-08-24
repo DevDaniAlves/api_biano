@@ -20,7 +20,7 @@ import { assumeMetricStart } from "./schedule.js";
 
 export const UPLOADS_DIR = path.resolve(env.UPLOADS_DIR || path.join(process.cwd(), "uploads"));
 
-export { listContactsForUser, assumeOnOpen, expireStaleRatings } from "./flow.js";
+export { listContactsForUser, assumeOnOpen, expireStaleRatings, openContactToAllSellers } from "./flow.js";
 export { saveContactSavedName } from "./contacts.js";
 
 const RATING_MSG =

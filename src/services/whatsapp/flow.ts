@@ -97,14 +97,19 @@ export function buildMenuText(welcome: string, options: FlowOption[]): string {
   return `${welcome}\n\n${lines.join("\n")}`;
 }
 
-/** Menu ao vivo: nomes dos vendedores ativos + opção de fila. */
+/** Menu ao vivo: vendedores na lista de atendentes (sem Ver todas). */
 async function resolveMenuOptions(): Promise<FlowOption[]> {
   const flow = await getFlow();
   const stored = asOptions(flow.options);
   const queueFromFlow = stored.find((o) => o.action === "queue");
 
   const sellers = await prisma.user.findMany({
-    where: { active: true, role: "seller" },
+    where: {
+      active: true,
+      role: "seller",
+      showInAttendantList: true,
+      seeAllMessages: false,
+    },
     orderBy: { createdAt: "asc" },
     select: { id: true, name: true },
   });
@@ -525,21 +530,32 @@ async function loadUserWindows(userId: string) {
   return prisma.userUnavailability.findMany({ where: { userId } });
 }
 
-async function userIsAvailable(userId: string): Promise<boolean> {
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user?.active) return false;
-
+/** Folga/férias: só bloqueia nova conexão exclusiva — não desativa o usuário. */
+async function userIsOnLeave(userId: string): Promise<boolean> {
   const now = new Date();
   const leaves = await prisma.userLeave.findMany({
     where: { userId, startsAt: { lte: now }, endsAt: { gte: now } },
   });
-  if (isOnLeave(leaves, now)) return false;
+  return isOnLeave(leaves, now);
+}
+
+/** Escala / ativo / janelas — sem folga (folga não desabilita o vendedor). */
+async function userIsAvailable(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user?.active) return false;
 
   const slots = await prisma.userScheduleSlot.findMany({ where: { userId } });
   if (!env.SKIP_BUSINESS_HOURS && !isWithinSchedule(slots, nowInSaoPaulo())) return false;
 
   const windows = await loadUserWindows(userId);
   return !isUserUnavailable(windows);
+}
+
+/** Pode receber oferta exclusiva (conexão) de um cliente. Folga = não. */
+async function canReceiveExclusiveOffer(userId: string): Promise<boolean> {
+  if (!(await userIsAvailable(userId))) return false;
+  if (await userIsOnLeave(userId)) return false;
+  return true;
 }
 
 /** Oferece atendimento exclusivo a um vendedor (10 min). */
@@ -597,14 +613,19 @@ export async function openContactToAllSellers(opts: {
       assumeWaitSeconds: null,
     },
   });
-  void recipientIdsForOpenQueue(opts.queueId ?? null).then((ids) => {
-    notifyUsersSafe(ids, {
+  const sellers = await prisma.user.findMany({
+    where: { active: true, role: "seller" },
+    select: { id: true },
+  });
+  notifyUsersSafe(
+    sellers.map((s) => s.id),
+    {
       title: "Conversa aberta",
-      body: `${contactDisplayName(updated)} está aguardando atendimento`,
+      body: `${contactDisplayName(updated)} — quem responder primeiro assume`,
       contactId: updated.id,
       tag: `wa-open-${updated.id}`,
-    });
-  });
+    }
+  );
   return updated;
 }
 
@@ -653,7 +674,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
 
   for (let i = 0; i < n; i++) {
     const agent = queue.agents[(start + i) % n];
-    if (agent.user.active && (await userIsAvailable(agent.userId))) {
+    if (agent.user.active && (await canReceiveExclusiveOffer(agent.userId))) {
       picked = agent;
       start = (start + i + 1) % n;
       break;
@@ -742,14 +763,25 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
 async function resolveAgentUserId(choice: FlowOption): Promise<string | null> {
   if (choice.userId) {
     const user = await prisma.user.findFirst({
-      where: { id: choice.userId, active: true },
+      where: {
+        id: choice.userId,
+        active: true,
+        role: "seller",
+        showInAttendantList: true,
+        seeAllMessages: false,
+      },
       select: { id: true },
     });
     if (user) return user.id;
   }
 
   const sellers = await prisma.user.findMany({
-    where: { active: true, role: { in: ["seller", "admin"] } },
+    where: {
+      active: true,
+      role: "seller",
+      showInAttendantList: true,
+      seeAllMessages: false,
+    },
     orderBy: { createdAt: "asc" },
     select: { id: true, name: true },
   });
@@ -777,6 +809,20 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     return;
   }
 
+  // Evita processar a mesma escolha duas vezes (webhook duplicado).
+  const claimed = await prisma.whatsAppContact.updateMany({
+    where: { id: contactId, status: "bot", botMenuStep: "sellers" },
+    data: { status: "waiting" },
+  });
+  if (claimed.count === 0) {
+    const existing = await prisma.whatsAppContact.findUnique({ where: { id: contactId } });
+    if (existing?.status === "waiting" || existing?.status === "human") return;
+    await sendSellersMenu(contactId);
+    return;
+  }
+
+  markMenuEchoGuard(contactId, key);
+
   if (choice.action === "agent") {
     const userId = await resolveAgentUserId(choice);
     const contact = await prisma.whatsAppContact.findUniqueOrThrow({
@@ -787,6 +833,22 @@ export async function handleMenuChoice(contactId: string, raw: string) {
         contact,
         "Este atendente ainda não está configurado. Escolha outra opção ou fale com o administrador."
       );
+      await prisma.whatsAppContact.update({
+        where: { id: contactId },
+        data: { status: "bot", botMenuStep: "sellers" },
+      });
+      return;
+    }
+    // Folga: não faz conexão exclusiva — abre para a equipe (usuário continua ativo).
+    if (await userIsOnLeave(userId)) {
+      let queueId: string | null = null;
+      const first = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+      queueId = first?.id ?? null;
+      await openContactToAllSellers({ contactId, queueId });
+      const msg =
+        "O atendente escolhido está em folga no momento. Sua conversa ficou *disponível para a equipe* — quem responder primeiro irá te atender.";
+      const externalId = await botSend(contact, msg);
+      await persistIfSent(contactId, msg, undefined, externalId);
       return;
     }
     await offerToAgent({ contactId, userId });
@@ -803,13 +865,13 @@ export async function handleMenuChoice(contactId: string, raw: string) {
     queueId = first?.id ?? null;
   }
 
-  // "Não tenho preferência" → disponível para todos os vendedores na hora.
+  // "Não tenho preferência" → fila aberta; primeiro vendedor que responder assume.
   await openContactToAllSellers({ contactId, queueId });
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
   const msg =
-    "Certo! Você entrou na fila de atendimento. Em breve um vendedor irá te atender.";
+    "Certo! Sua conversa está disponível para nossa equipe. *Quem responder primeiro* irá te atender.";
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
 }
@@ -1030,7 +1092,7 @@ export async function expireIdleConversations() {
   return stale.length;
 }
 
-/** Clicar na conversa = assumir (vendedor). Admin só supervisiona, não assume. */
+/** Abrir conversa: vendedor assume oferta exclusiva; fila aberta (openToAll) só assume ao responder. Admin não assume. */
 export async function assumeOnOpen(
   contactId: string,
   userId: string,
@@ -1084,6 +1146,14 @@ export async function assumeOnOpen(
     throw new Error("Conversa já assumida por outro atendente");
   }
 
+  if (contact.status === "waiting" && contact.openToAll) {
+    await prisma.whatsAppContact.update({
+      where: { id: contactId },
+      data: { unreadCount: 0 },
+    });
+    return contact;
+  }
+
   if (contact.status === "waiting") {
     const canTake =
       seeAll ||
@@ -1096,8 +1166,25 @@ export async function assumeOnOpen(
     const now = new Date();
     const start = assumeMetricStart(contact, userId);
     const assumeWaitSeconds = Math.max(0, Math.round((now.getTime() - start.getTime()) / 1000));
-    return prisma.whatsAppContact.update({
-      where: { id: contactId },
+
+    const waitingWhere = contact.openToAll
+      ? { id: contactId, status: "waiting" as const, openToAll: true }
+      : contact.offeredToId === userId
+        ? {
+            id: contactId,
+            status: "waiting" as const,
+            offeredToId: userId,
+            openToAll: false,
+          }
+        : {
+            id: contactId,
+            status: "waiting" as const,
+            offeredToId: null,
+            openToAll: false,
+          };
+
+    const claimed = await prisma.whatsAppContact.updateMany({
+      where: waitingWhere,
       data: {
         status: "human",
         assignedToId: userId,
@@ -1108,6 +1195,36 @@ export async function assumeOnOpen(
         openToAll: false,
         unreadCount: 0,
       },
+    });
+
+    if (claimed.count === 0) {
+      const fresh = await prisma.whatsAppContact.findUniqueOrThrow({
+        where: { id: contactId },
+      });
+      if (fresh.status === "human" && fresh.assignedToId === userId) {
+        return prisma.whatsAppContact.findUniqueOrThrow({
+          where: { id: contactId },
+          include: {
+            assignedTo: { select: { id: true, name: true } },
+            queue: { select: { id: true, name: true } },
+          },
+        });
+      }
+      if (fresh.status === "human" && fresh.assignedToId && fresh.assignedToId !== userId) {
+        if (seeAll) {
+          await prisma.whatsAppContact.update({
+            where: { id: contactId },
+            data: { unreadCount: 0 },
+          });
+          return fresh;
+        }
+        throw new Error("Conversa já assumida por outro atendente");
+      }
+      throw new Error("Outro atendente acabou de assumir esta conversa");
+    }
+
+    return prisma.whatsAppContact.findUniqueOrThrow({
+      where: { id: contactId },
       include: {
         assignedTo: { select: { id: true, name: true } },
         queue: { select: { id: true, name: true } },

@@ -97,6 +97,8 @@ model User {
   active        Boolean             @default(true)
   /** Vê todas as conversas (sem recorte de fila) e pode assumir para registrar histórico. */
   seeAllMessages Boolean            @default(false)
+  /** Aparece no menu do bot para o cliente escolher. Ver todas / false = fora da lista. */
+  showInAttendantList Boolean       @default(true)
   createdAt     DateTime            @default(now())
   agents        WhatsAppAgent[]
   assigned      WhatsAppContact[]   @relation("AssignedContacts")
