@@ -354,15 +354,76 @@ export class MetaClient {
     });
   }
 
-  async sendMediaLink(opts: {
+  /**
+   * Upload binário → media id (Cloud API).
+   * Preferir isto a image.link: a Meta precisa baixar a URL e /uploads locais não são URI válidas.
+   */
+  async uploadMedia(opts: {
+    buffer: Buffer;
+    mimetype: string;
+    fileName?: string;
+  }): Promise<{ ok: true; id: string } | { ok: false; status: number; text: string }> {
+    const phoneNumberId = await this.resolvePhoneNumberId();
+    if (!phoneNumberId || !env.META_ACCESS_TOKEN) {
+      return { ok: false, status: 0, text: "Meta não configurada" };
+    }
+    if (opts.buffer.length < 40) {
+      return { ok: false, status: 0, text: "Arquivo de mídia vazio" };
+    }
+    const mime = (opts.mimetype || "application/octet-stream").split(";")[0].trim();
+    const name = opts.fileName || `media.${mime.split("/")[1] || "bin"}`;
+    const form = new FormData();
+    form.append("messaging_product", "whatsapp");
+    form.append("type", mime);
+    form.append("file", new Blob([Uint8Array.from(opts.buffer)], { type: mime }), name);
+
+    try {
+      const res = await fetch(`${GRAPH}/${encodeURIComponent(phoneNumberId)}/media`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.META_ACCESS_TOKEN}` },
+        body: form,
+      });
+      const text = await res.text().catch(() => "");
+      let data: unknown = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
+      const id =
+        data && typeof data === "object" && "id" in data
+          ? String((data as { id?: unknown }).id ?? "").trim()
+          : "";
+      if (!res.ok || !id) {
+        console.error("[meta] media upload", res.status, text.slice(0, 400));
+        return { ok: false, status: res.status, text: text.slice(0, 500) };
+      }
+      console.log("[meta] media upload ok", id.slice(0, 24));
+      return { ok: true, id };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[meta] media upload", msg);
+      return { ok: false, status: 0, text: msg };
+    }
+  }
+
+  async sendMedia(opts: {
     to: string;
     mediatype: "image" | "document" | "audio" | "video";
-    link: string;
+    /** Media id retornado por uploadMedia. */
+    id?: string;
+    /** Só se for HTTPS público acessível pela Meta. */
+    link?: string;
     caption?: string;
     fileName?: string;
   }) {
     const type = opts.mediatype;
-    const payload: Record<string, unknown> = { link: opts.link };
+    const payload: Record<string, unknown> = {};
+    if (opts.id) payload.id = opts.id;
+    else if (opts.link) payload.link = opts.link;
+    else {
+      return { ok: false, status: 0, data: null, text: "Meta mídia exige id ou link HTTPS" };
+    }
     if (opts.caption && type !== "audio") payload.caption = opts.caption;
     if (type === "document" && opts.fileName) payload.filename = opts.fileName;
     return this.req({
@@ -370,6 +431,17 @@ export class MetaClient {
       type,
       [type]: payload,
     });
+  }
+
+  /** @deprecated use sendMedia */
+  async sendMediaLink(opts: {
+    to: string;
+    mediatype: "image" | "document" | "audio" | "video";
+    link: string;
+    caption?: string;
+    fileName?: string;
+  }) {
+    return this.sendMedia(opts);
   }
 
   /** Lê o perfil comercial do número (Cloud API). */

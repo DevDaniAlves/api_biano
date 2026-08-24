@@ -1,4 +1,5 @@
 import { prisma } from "../../db.js";
+import { userCanSeeAllMessages } from "../auth.js";
 
 type ContactNameFields = {
   phone: string;
@@ -66,8 +67,10 @@ export async function saveContactSavedName(opts: {
   });
   if (!contact) throw new Error("Contato não encontrado");
 
-  if (opts.role === "seller" && !sellerCanAccessContact(contact, opts.userId)) {
-    throw new Error("Contato não encontrado");
+  if (opts.role === "seller" && !(await userCanSeeAllMessages(opts.userId, opts.role))) {
+    if (!sellerCanAccessContact(contact, opts.userId)) {
+      throw new Error("Contato não encontrado");
+    }
   }
 
   const updated = await prisma.whatsAppContact.update({

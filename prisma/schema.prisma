@@ -95,6 +95,8 @@ model User {
   passwordHash  String
   role          UserRole            @default(seller)
   active        Boolean             @default(true)
+  /** Vê todas as conversas (sem recorte de fila) e pode assumir para registrar histórico. */
+  seeAllMessages Boolean            @default(false)
   createdAt     DateTime            @default(now())
   agents        WhatsAppAgent[]
   assigned      WhatsAppContact[]   @relation("AssignedContacts")

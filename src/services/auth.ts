@@ -9,6 +9,7 @@ export interface AuthUser {
   name: string;
   email: string;
   role: "admin" | "seller";
+  seeAllMessages?: boolean;
 }
 
 declare global {
@@ -19,7 +20,16 @@ declare global {
   }
 }
 
-export function signToken(user: AuthUser) {
+export async function userCanSeeAllMessages(userId: string, role?: string) {
+  if (role === "admin") return true;
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true, seeAllMessages: true },
+  });
+  return u?.role === "admin" || Boolean(u?.seeAllMessages);
+}
+
+function signToken(user: AuthUser) {
   return jwt.sign(user, env.JWT_SECRET, { expiresIn: "7d" });
 }
 
@@ -56,6 +66,7 @@ export async function login(email: string, password: string) {
     name: user.name,
     email: user.email,
     role: user.role,
+    seeAllMessages: Boolean(user.seeAllMessages),
   };
   return { user: payload, token: signToken(payload) };
 }
@@ -86,6 +97,7 @@ export async function createUser(data: {
   email: string;
   password: string;
   role?: "admin" | "seller";
+  seeAllMessages?: boolean;
 }) {
   const passwordHash = await bcrypt.hash(data.password, 10);
   return prisma.user.create({
@@ -94,6 +106,7 @@ export async function createUser(data: {
       email: data.email.toLowerCase(),
       passwordHash,
       role: data.role ?? "seller",
+      seeAllMessages: Boolean(data.seeAllMessages),
     },
   });
 }

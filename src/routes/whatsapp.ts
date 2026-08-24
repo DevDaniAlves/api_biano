@@ -4,7 +4,7 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { env } from "../config.js";
 import { prisma } from "../db.js";
-import { authRequired, changePassword, createUser, login } from "../services/auth.js";
+import { authRequired, changePassword, createUser, login, userCanSeeAllMessages } from "../services/auth.js";
 import {
   ensureFlow,
   getFlow,
@@ -109,7 +109,23 @@ whatsappRouter.post("/auth/login", async (req, res) => {
 });
 
 whatsappRouter.get("/auth/me", authRequired, async (req, res) => {
-  res.json({ user: req.user });
+  const row = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true },
+  });
+  if (!row?.active) {
+    res.status(401).json({ error: "Usuário inativo" });
+    return;
+  }
+  res.json({
+    user: {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      role: row.role,
+      seeAllMessages: Boolean(row.seeAllMessages),
+    },
+  });
 });
 
 whatsappRouter.post("/webhook/evolution", async (req, res) => {
@@ -878,7 +894,8 @@ whatsappRouter.get("/contacts", async (req, res) => {
       status: typeof req.query.status === "string" ? req.query.status : undefined,
       search: typeof req.query.search === "string" ? req.query.search : undefined,
       sellerId:
-        req.user!.role === "admin" && typeof req.query.sellerId === "string"
+        (await userCanSeeAllMessages(req.user!.id, req.user!.role)) &&
+        typeof req.query.sellerId === "string"
           ? req.query.sellerId
           : undefined,
     });
@@ -1513,7 +1530,7 @@ whatsappRouter.delete("/agents/:id", async (req, res) => {
 
 whatsappRouter.get("/users", async (_req, res) => {
   const users = await prisma.user.findMany({
-    select: { id: true, name: true, email: true, role: true, active: true },
+    select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
   res.json(users);
@@ -1529,8 +1546,11 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
       res.status(400).json({ error: "Você não pode desativar a si mesmo" });
       return;
     }
-    const data: { active?: boolean; name?: string } = {};
+    const data: { active?: boolean; name?: string; seeAllMessages?: boolean } = {};
     if (typeof req.body?.active === "boolean") data.active = req.body.active;
+    if (typeof req.body?.seeAllMessages === "boolean") {
+      data.seeAllMessages = req.body.seeAllMessages;
+    }
     if (typeof req.body?.name === "string") {
       const name = req.body.name.trim();
       if (!name) {
@@ -1546,7 +1566,7 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
     const user = await prisma.user.update({
       where: { id: req.params.id },
       data,
-      select: { id: true, name: true, email: true, role: true, active: true },
+      select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true },
     });
     res.json(user);
   } catch (err) {
@@ -1565,12 +1585,14 @@ whatsappRouter.post("/users", async (req, res) => {
       email: String(req.body?.email ?? ""),
       password: String(req.body?.password ?? ""),
       role: req.body?.role === "admin" ? "admin" : "seller",
+      seeAllMessages: Boolean(req.body?.seeAllMessages),
     });
     res.status(201).json({
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
+      seeAllMessages: user.seeAllMessages,
     });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

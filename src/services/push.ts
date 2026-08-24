@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import { env } from "../config.js";
 import { prisma } from "../db.js";
+import { userCanSeeAllMessages } from "./auth.js";
 
 export type PushPayload = {
   title: string;
@@ -25,7 +26,7 @@ export function getVapidPublicKey() {
 
 /** Badge do ícone: filas novas + mensagens não lidas em andamento. */
 export async function pendingBadgeCount(userId: string, role: "admin" | "seller") {
-  if (role === "admin") {
+  if (await userCanSeeAllMessages(userId, role)) {
     const waiting = await prisma.whatsAppContact.count({ where: { status: "waiting" } });
     const unread = await prisma.whatsAppContact.aggregate({
       where: { status: "human", unreadCount: { gt: 0 } },

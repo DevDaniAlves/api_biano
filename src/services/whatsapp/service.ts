@@ -880,6 +880,27 @@ export async function resolveContact(contactId: string) {
   if (contact.webhookPaused) {
     throw new Error("Cliente em atendimento manual — volte ao webhook antes de finalizar");
   }
+  if (contact.status === "awaiting_rating" || contact.status === "closed") {
+    return contact;
+  }
+
+  const claimed = await prisma.whatsAppContact.updateMany({
+    where: {
+      id: contactId,
+      webhookPaused: false,
+      status: { in: ["human", "waiting"] },
+    },
+    data: {
+      status: "awaiting_rating",
+      ratingAskedAt: new Date(),
+      rating: null,
+      offeredToId: null,
+      openToAll: false,
+    },
+  });
+  if (claimed.count === 0) {
+    return prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  }
 
   let externalId: string | null = null;
   if (await messagingEnabled()) {
@@ -904,11 +925,6 @@ export async function resolveContact(contactId: string) {
   return prisma.whatsAppContact.update({
     where: { id: contactId },
     data: {
-      status: "awaiting_rating",
-      ratingAskedAt: new Date(),
-      rating: null,
-      offeredToId: null,
-      openToAll: false,
       lastMessageAt: new Date(),
       lastMessagePreview: RATING_MSG.slice(0, 120),
     },

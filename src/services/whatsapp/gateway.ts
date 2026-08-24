@@ -148,18 +148,55 @@ export async function sendOutbound(opts: {
           components: opts.template.components,
         });
       } else if (opts.media) {
-        if (!opts.media.link) {
-          const err = "Meta mídia exige link HTTPS público (media.link)";
+        // Cloud API: upload binário → media id. image.link só vale com HTTPS público
+        // (path /uploads/... local gera "#100 Param image.link is not a valid URI").
+        let mediaId: string | null = null;
+        if (opts.media.base64) {
+          const raw = opts.media.base64.replace(/^data:[^;]+;base64,/, "");
+          const buf = Buffer.from(raw, "base64");
+          const mime =
+            opts.media.mimetype ||
+            (opts.media.mediatype === "image"
+              ? "image/jpeg"
+              : opts.media.mediatype === "audio"
+                ? "audio/ogg"
+                : opts.media.mediatype === "video"
+                  ? "video/mp4"
+                  : "application/octet-stream");
+          const up = await meta.uploadMedia({
+            buffer: buf,
+            mimetype: mime,
+            fileName: opts.media.fileName,
+          });
+          if (!up.ok) {
+            const error = `Upload mídia Meta: HTTP ${up.status}: ${up.text}`;
+            await prisma.whatsAppSendLog.update({
+              where: { id: log.id },
+              data: { status: "failed", error },
+            });
+            return { ok: false, externalId: null, error, provider, logId: log.id };
+          }
+          mediaId = up.id;
+        }
+        const publicLink = toPublicMediaUrl(opts.media.link);
+        const canUseLink =
+          !mediaId &&
+          publicLink &&
+          /^https:\/\//i.test(publicLink) &&
+          !isUnreachableMediaUrl(publicLink);
+        if (!mediaId && !canUseLink) {
+          const err =
+            "Meta mídia: envie o arquivo (base64) para upload, ou um link HTTPS público";
           await prisma.whatsAppSendLog.update({
             where: { id: log.id },
             data: { status: "failed", error: err },
           });
           return { ok: false, externalId: null, error: err, provider, logId: log.id };
         }
-        r = await meta.sendMediaLink({
+        r = await meta.sendMedia({
           to: phone,
           mediatype: opts.media.mediatype,
-          link: opts.media.link,
+          ...(mediaId ? { id: mediaId } : { link: publicLink! }),
           caption: opts.media.caption,
           fileName: opts.media.fileName,
         });

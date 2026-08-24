@@ -14,6 +14,7 @@ import {
   nowInSaoPaulo,
 } from "./schedule.js";
 import { contactDisplayName } from "./contacts.js";
+import { userCanSeeAllMessages } from "../auth.js";
 
 /** Menus/auto-respostas do CRM. Desligar em Conectar WhatsApp para testes manuais. */
 export async function isCrmBotEnabled() {
@@ -1041,6 +1042,8 @@ export async function assumeOnOpen(
 
   if (role === "admin") return contact;
 
+  const seeAll = await userCanSeeAllMessages(userId, role);
+
   if (contact.webhookPaused) {
     await prisma.whatsAppContact.update({
       where: { id: contactId },
@@ -1071,11 +1074,19 @@ export async function assumeOnOpen(
     contact.assignedToId &&
     contact.assignedToId !== userId
   ) {
+    if (seeAll) {
+      await prisma.whatsAppContact.update({
+        where: { id: contactId },
+        data: { unreadCount: 0 },
+      });
+      return contact;
+    }
     throw new Error("Conversa já assumida por outro atendente");
   }
 
   if (contact.status === "waiting") {
     const canTake =
+      seeAll ||
       contact.openToAll ||
       contact.offeredToId === userId ||
       (!contact.offeredToId && !contact.openToAll);
@@ -1158,7 +1169,7 @@ export async function listContactsForUser(opts: {
         ? {
             webhookPaused: false,
             status: {
-              in: (opts.role === "admin"
+              in: ((await userCanSeeAllMessages(opts.userId, opts.role))
                 ? ["bot", "waiting", "human"]
                 : ["waiting", "human"]) as ContactStatusFilter[],
             },
@@ -1173,7 +1184,9 @@ export async function listContactsForUser(opts: {
     queue: { select: { id: true, name: true } },
   } as const;
 
-  if (opts.role === "admin") {
+  const seeAll = await userCanSeeAllMessages(opts.userId, opts.role);
+
+  if (seeAll) {
     const sellerFilter = opts.sellerId ? sellerScope(opts.sellerId, { includeOpenQueue: false }) : {};
     return prisma.whatsAppContact.findMany({
       where: {
