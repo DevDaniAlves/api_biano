@@ -40,8 +40,37 @@ export function authRequired(req: Request, res: Response, next: NextFunction) {
     return;
   }
   try {
-    req.user = jwt.verify(header.slice(7), env.JWT_SECRET) as AuthUser;
-    next();
+    const payload = jwt.verify(header.slice(7), env.JWT_SECRET) as AuthUser;
+    // Papel/flags atuais no banco (promoção a admin vale sem novo login).
+    void prisma.user
+      .findUnique({
+        where: { id: payload.id },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          active: true,
+          seeAllMessages: true,
+        },
+      })
+      .then((row) => {
+        if (!row?.active) {
+          res.status(401).json({ error: "Usuário inativo" });
+          return;
+        }
+        req.user = {
+          id: row.id,
+          name: row.name,
+          email: row.email,
+          role: row.role,
+          seeAllMessages: Boolean(row.seeAllMessages),
+        };
+        next();
+      })
+      .catch(() => {
+        res.status(401).json({ error: "Token inválido" });
+      });
   } catch {
     res.status(401).json({ error: "Token inválido" });
   }

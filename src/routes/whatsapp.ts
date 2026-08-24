@@ -1602,6 +1602,7 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
     const data: {
       active?: boolean;
       name?: string;
+      role?: "admin" | "seller";
       seeAllMessages?: boolean;
       showInAttendantList?: boolean;
     } = {};
@@ -1611,6 +1612,27 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
     }
     if (typeof req.body?.showInAttendantList === "boolean") {
       data.showInAttendantList = req.body.showInAttendantList;
+    }
+    if (req.body?.role === "admin" || req.body?.role === "seller") {
+      if (req.params.id === req.user!.id && req.body.role === "seller") {
+        res.status(400).json({ error: "Você não pode remover seu próprio acesso de admin" });
+        return;
+      }
+      if (req.body.role === "seller") {
+        const admins = await prisma.user.count({
+          where: { role: "admin", active: true, id: { not: req.params.id } },
+        });
+        if (admins === 0) {
+          res.status(400).json({ error: "Precisa restar pelo menos um admin ativo" });
+          return;
+        }
+      }
+      data.role = req.body.role;
+      // Admin já vê tudo; limpa flags de vendedor.
+      if (req.body.role === "admin") {
+        data.seeAllMessages = true;
+        data.showInAttendantList = false;
+      }
     }
     if (typeof req.body?.name === "string") {
       const name = req.body.name.trim();
