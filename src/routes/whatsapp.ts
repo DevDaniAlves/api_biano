@@ -34,6 +34,7 @@ import {
 import {
   UPLOADS_DIR,
   assignContact,
+  contactFlags,
   getWhatsAppReports,
   handleEvolutionWebhook,
   listContacts,
@@ -45,6 +46,7 @@ import {
   sendTextMessage,
   warnInactivity,
 } from "../services/whatsapp/service.js";
+import { serializeContact } from "../services/whatsapp/contacts.js";
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
@@ -983,12 +985,25 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
 
 whatsappRouter.post("/contacts/assign", async (req, res) => {
   try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin atribui conversas" });
+      return;
+    }
+    const contactId = String(req.body?.contactId ?? "");
+    if (!contactId) {
+      res.status(400).json({ error: "contactId obrigatório" });
+      return;
+    }
+    const userId =
+      req.body?.userId === undefined || req.body?.userId === null || req.body?.userId === ""
+        ? req.user!.id
+        : String(req.body.userId);
     const contact = await assignContact({
-      contactId: String(req.body?.contactId ?? ""),
-      userId: req.body?.userId === undefined ? req.user!.id : req.body.userId,
+      contactId,
+      userId,
       queueId: req.body?.queueId ?? undefined,
     });
-    res.json(contact);
+    res.json({ ...serializeContact(contact), ...contactFlags(contact) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
