@@ -426,6 +426,8 @@ export class MetaClient {
     link?: string;
     caption?: string;
     fileName?: string;
+    /** Nota de voz (ícone de microfone) — Cloud API. */
+    voice?: boolean;
   }) {
     const type = opts.mediatype;
     const payload: Record<string, unknown> = {};
@@ -436,6 +438,8 @@ export class MetaClient {
     }
     if (opts.caption && type !== "audio") payload.caption = opts.caption;
     if (type === "document" && opts.fileName) payload.filename = opts.fileName;
+    // voice=true exige ogg/opus; com MP3 a Meta ignora ou falha — só marcar se for ogg.
+    if (type === "audio" && opts.voice) payload.voice = true;
     return this.req({
       to: MetaClient.toNumber(opts.to),
       type,

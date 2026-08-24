@@ -108,3 +108,87 @@ catalogRouter.delete("/admin/products/:id", authRequired, adminRequired, async (
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
+
+/** Público: só fotos aprovadas para a LP. */
+catalogRouter.get("/gallery", async (_req, res) => {
+  const items = await prisma.galleryImage.findMany({
+    where: { status: "approved" },
+    orderBy: [{ sortOrder: "asc" }, { reviewedAt: "desc" }, { createdAt: "desc" }],
+    select: {
+      id: true,
+      imageUrl: true,
+      caption: true,
+      sortOrder: true,
+      createdAt: true,
+    },
+  });
+  res.json(items);
+});
+
+const galleryInclude = {
+  submittedBy: { select: { id: true, name: true } },
+  reviewedBy: { select: { id: true, name: true } },
+} as const;
+
+/** Admin: listar (filtro status opcional). */
+catalogRouter.get("/admin/gallery", authRequired, adminRequired, async (req, res) => {
+  const status = typeof req.query.status === "string" ? req.query.status : "";
+  const where =
+    status === "pending" || status === "approved" || status === "rejected"
+      ? { status: status as "pending" | "approved" | "rejected" }
+      : {};
+  res.json(
+    await prisma.galleryImage.findMany({
+      where,
+      orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+      include: galleryInclude,
+    })
+  );
+});
+
+/** Admin: aprovar / rejeitar / ordenar. */
+catalogRouter.patch("/admin/gallery/:id", authRequired, adminRequired, async (req, res) => {
+  try {
+    const data: {
+      status?: "pending" | "approved" | "rejected";
+      sortOrder?: number;
+      caption?: string | null;
+      reviewedById?: string;
+      reviewedAt?: Date;
+    } = {};
+    if (
+      req.body?.status === "pending" ||
+      req.body?.status === "approved" ||
+      req.body?.status === "rejected"
+    ) {
+      data.status = req.body.status;
+      data.reviewedById = req.user!.id;
+      data.reviewedAt = new Date();
+    }
+    if (typeof req.body?.sortOrder === "number") data.sortOrder = req.body.sortOrder;
+    if (req.body?.caption !== undefined) {
+      data.caption = req.body.caption ? String(req.body.caption).trim() : null;
+    }
+    if (!Object.keys(data).length) {
+      res.status(400).json({ error: "Nada para atualizar" });
+      return;
+    }
+    const row = await prisma.galleryImage.update({
+      where: { id: String(req.params.id) },
+      data,
+      include: galleryInclude,
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+catalogRouter.delete("/admin/gallery/:id", authRequired, adminRequired, async (req, res) => {
+  try {
+    await prisma.galleryImage.delete({ where: { id: String(req.params.id) } });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});

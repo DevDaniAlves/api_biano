@@ -106,6 +106,8 @@ model User {
   scheduleSlots UserScheduleSlot[]
   leaves        UserLeave[]
   pushSubs      PushSubscription[]
+  gallerySubmitted GalleryImage[] @relation("GallerySubmitted")
+  galleryReviewed  GalleryImage[] @relation("GalleryReviewed")
 }
 
 model PushSubscription {
@@ -326,6 +328,33 @@ model Product {
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+/** Fotos enviadas por vendedores (CRM) → aprovação → LP. */
+enum GalleryImageStatus {
+  pending
+  approved
+  rejected
+}
+
+model GalleryImage {
+  id              String             @id @default(cuid())
+  imageUrl        String
+  caption         String?
+  status          GalleryImageStatus @default(pending)
+  sortOrder       Int                @default(0)
+  submittedById   String?
+  submittedBy     User?              @relation("GallerySubmitted", fields: [submittedById], references: [id], onDelete: SetNull)
+  reviewedById    String?
+  reviewedBy      User?              @relation("GalleryReviewed", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt      DateTime?
+  /** Mensagem WhatsApp de origem (opcional). */
+  sourceMessageId String?            @unique
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([status, sortOrder])
+  @@index([submittedById])
 }
 
 /** Agendamento do Gestor: scrape Playwright + disparo (horário Brasília). */

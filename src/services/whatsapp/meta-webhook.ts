@@ -3,6 +3,9 @@ import { prisma } from "../../db.js";
 import { applyMetaStatus } from "./gateway.js";
 import { MetaClient, meta } from "./meta.js";
 import { processInboundBot } from "./flow.js";
+import { contactDisplayName } from "./contacts.js";
+import { handleRatingReply } from "./service.js";
+import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
 
 /** BR: Meta manda wa_id com 12 dígitos; envio usa 13 com 9º — unificar no contato canônico. */
 function brPhoneVariants(raw: string): { canonical: string; alt: string | null } {
@@ -127,6 +130,7 @@ async function upsertInboundMessage(opts: {
   mediaUrl?: string | null;
   /** ID da mídia Graph (para retry se o download falhar). */
   metaMediaId?: string | null;
+  quotedExternalId?: string | null;
 }) {
   const { contact, isNew } = await resolveMetaContact({
     phone: opts.phone,
@@ -140,20 +144,29 @@ async function upsertInboundMessage(opts: {
       where: { contactId_externalId: { contactId: contact.id, externalId: opts.externalId } },
     });
     if (existing) {
+      const patch: {
+        type?: string;
+        body?: string;
+        mediaUrl?: string;
+        quotedExternalId?: string;
+      } = {};
       if (
         MEDIA_TYPES.has(opts.type) &&
         opts.mediaUrl &&
         (!existing.mediaUrl || existing.mediaUrl.startsWith("meta-media:"))
       ) {
-        await prisma.whatsAppMessage.update({
-          where: { id: existing.id },
-          data: {
-            type: opts.type,
-            body: opts.body,
-            mediaUrl: opts.mediaUrl,
-          },
-        });
+        patch.type = opts.type;
+        patch.body = opts.body;
+        patch.mediaUrl = opts.mediaUrl;
       }
+      if (!existing.quotedExternalId && opts.quotedExternalId) {
+        patch.quotedExternalId = opts.quotedExternalId;
+      }
+      if (Object.keys(patch).length) {
+        await prisma.whatsAppMessage.update({ where: { id: existing.id }, data: patch });
+      }
+      // Duplicata: só tenta avaliação órfã (não reenvia push/bot).
+      await maybeHandleMetaRating(contact.id, opts.body);
       return;
     }
   }
@@ -162,16 +175,26 @@ async function upsertInboundMessage(opts: {
     opts.mediaUrl ||
     (opts.metaMediaId ? `meta-media:${opts.metaMediaId}` : null);
 
-  await prisma.whatsAppMessage.create({
-    data: {
-      contactId: contact.id,
-      direction: "in",
-      type: opts.type,
-      body: opts.body,
-      mediaUrl,
-      externalId: opts.externalId || null,
-    },
-  });
+  try {
+    await prisma.whatsAppMessage.create({
+      data: {
+        contactId: contact.id,
+        direction: "in",
+        type: opts.type,
+        body: opts.body,
+        mediaUrl,
+        externalId: opts.externalId || null,
+        quotedExternalId: opts.quotedExternalId || null,
+      },
+    });
+  } catch (err) {
+    if ((err as { code?: string })?.code === "P2002" && opts.externalId) {
+      console.warn("[meta] dup ignorado", opts.phone, opts.externalId);
+      await maybeHandleMetaRating(contact.id, opts.body);
+      return;
+    }
+    throw err;
+  }
   await prisma.whatsAppContact.update({
     where: { id: contact.id },
     data: {
@@ -182,10 +205,95 @@ async function upsertInboundMessage(opts: {
     },
   });
 
-  // Bot só processa texto / escolha de menu (caption de mídia não dispara menu).
-  if (opts.type === "text" || opts.type === "button" || opts.type === "interactive") {
-    await processInboundBot(contact.id, opts.body, isNew);
+  await routeMetaInbound(contact.id, opts.body, opts.type, isNew);
+}
+
+/** Avalia se ainda falta processar nota 1–5. */
+async function maybeHandleMetaRating(contactId: string, body: string) {
+  const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  if (fresh.webhookPaused || fresh.rating != null) return;
+
+  const digitOnly = /^\s*[1-5]\s*$/.test(body.trim());
+  const stillAwaiting = fresh.status === "awaiting_rating";
+  const lateAfterAsk =
+    fresh.status === "closed" &&
+    digitOnly &&
+    fresh.ratingAskedAt != null &&
+    Date.now() - fresh.ratingAskedAt.getTime() < 30 * 60_000;
+
+  if (!stillAwaiting && !lateAfterAsk) return;
+  console.log("[meta] rating reply", contactId, JSON.stringify(body).slice(0, 40));
+  await handleRatingReply(contactId, body);
+}
+
+/** Rating / bot / push — após gravar mensagem nova. */
+async function routeMetaInbound(
+  contactId: string,
+  body: string,
+  type: string,
+  isNew: boolean
+) {
+  const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  if (fresh.webhookPaused) return;
+
+  const digitOnly = /^\s*[1-5]\s*$/.test(body.trim());
+  const stillAwaiting = fresh.status === "awaiting_rating";
+  const lateAfterAsk =
+    fresh.status === "closed" &&
+    digitOnly &&
+    fresh.rating == null &&
+    fresh.ratingAskedAt != null &&
+    Date.now() - fresh.ratingAskedAt.getTime() < 30 * 60_000;
+
+  if (stillAwaiting || lateAfterAsk) {
+    console.log("[meta] rating reply", contactId, JSON.stringify(body).slice(0, 40));
+    await handleRatingReply(contactId, body);
+    return;
   }
+
+  // Menu do bot só em texto/botão (mídia não dispara escolha numérica).
+  const menuType = type === "text" || type === "button" || type === "interactive";
+  if (menuType && (isNew || fresh.status === "bot" || fresh.status === "closed")) {
+    await processInboundBot(contactId, body, isNew || fresh.status === "closed");
+    return;
+  }
+
+  if (!(type === "text" || type === "button" || type === "interactive" || MEDIA_TYPES.has(type))) {
+    return;
+  }
+
+  const preview = body.slice(0, 120);
+  const who = contactDisplayName(fresh);
+  if (fresh.status === "human" && fresh.assignedToId) {
+    notifyUsersSafe([fresh.assignedToId], {
+      title: who,
+      body: preview,
+      contactId: fresh.id,
+    });
+  } else if (fresh.status === "waiting" && fresh.offeredToId && !fresh.openToAll) {
+    notifyUsersSafe([fresh.offeredToId], {
+      title: who,
+      body: preview,
+      contactId: fresh.id,
+    });
+  } else if (fresh.status === "waiting" && fresh.openToAll) {
+    void recipientIdsForOpenQueue(fresh.queueId).then((ids) => {
+      notifyUsersSafe(ids, {
+        title: who,
+        body: preview,
+        contactId: fresh.id,
+      });
+    });
+  }
+}
+
+function metaQuotedId(m: Record<string, unknown>): string | null {
+  const ctx = m.context;
+  if (!ctx || typeof ctx !== "object") return null;
+  const id = (ctx as { id?: unknown; message_id?: unknown }).id
+    ?? (ctx as { message_id?: unknown }).message_id;
+  const s = id != null ? String(id).trim() : "";
+  return s.length > 4 ? s : null;
 }
 
 /** Processa payload webhook Cloud API (messages + statuses). */
@@ -260,6 +368,7 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
         const id = String(m.id ?? "");
         const type = String(m.type ?? "text");
         if (!from || !id) continue;
+        const quotedExternalId = metaQuotedId(m);
 
         if (type === "text" && m.text && typeof m.text === "object") {
           const body = String((m.text as { body?: string }).body ?? "");
@@ -270,6 +379,7 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
             type: "text",
             externalId: id,
             profileName: profileName || null,
+            quotedExternalId,
           });
           continue;
         }
@@ -283,6 +393,7 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
             type: "button",
             externalId: id,
             profileName: profileName || null,
+            quotedExternalId,
           });
           continue;
         }
@@ -305,6 +416,31 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
             type: "interactive",
             externalId: id,
             profileName: profileName || null,
+            quotedExternalId,
+          });
+          continue;
+        }
+
+        if (type === "location" && m.location && typeof m.location === "object") {
+          const loc = m.location as {
+            latitude?: number | string;
+            longitude?: number | string;
+            name?: string;
+            address?: string;
+          };
+          const lat = loc.latitude != null ? String(loc.latitude) : "";
+          const lng = loc.longitude != null ? String(loc.longitude) : "";
+          const label = [loc.name, loc.address].filter(Boolean).join(" — ");
+          const body = label
+            ? `Localização: ${label} (${lat}, ${lng})`
+            : `Localização: ${lat}, ${lng}`;
+          await upsertInboundMessage({
+            phone: from,
+            body,
+            type: "text",
+            externalId: id,
+            profileName: profileName || null,
+            quotedExternalId,
           });
           continue;
         }
@@ -332,17 +468,19 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
             profileName: profileName || null,
             mediaUrl,
             metaMediaId: mediaId,
+            quotedExternalId,
           });
           continue;
         }
 
-        // Outros tipos (reaction, location, contacts…) — placeholder texto.
+        // Outros tipos (reaction, contacts…) — placeholder texto.
         await upsertInboundMessage({
           phone: from,
           body: mediaPlaceholder(type),
           type: "text",
           externalId: id,
           profileName: profileName || null,
+          quotedExternalId,
         });
       }
     }

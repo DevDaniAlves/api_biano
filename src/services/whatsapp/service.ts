@@ -4,6 +4,7 @@ import path from "node:path";
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
 import { notifyUsersSafe, recipientIdsForOpenQueue } from "../push.js";
+import { submitSellerPhotoToGallery } from "../gallery.js";
 import { evolution, EvolutionClient } from "./evolution.js";
 import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
 import { meta } from "./meta.js";
@@ -815,6 +816,23 @@ export async function sendImageMessage(opts: {
     },
   });
 
+  // Fotos de vendedor → galeria pendente (admin aprova o que vai pra LP).
+  if (mediatype === "image" && role === "seller" && opts.publicUrl) {
+    try {
+      await submitSellerPhotoToGallery({
+        imageUrl: opts.publicUrl,
+        caption: opts.caption ?? null,
+        submittedById: opts.userId,
+        sourceMessageId: msg.id,
+      });
+    } catch (err) {
+      console.warn(
+        "[gallery] falha ao enfileirar foto",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
   return msg;
 }
 
@@ -977,11 +995,14 @@ export async function warnInactivity(contactId: string, userId: string) {
 }
 
 export async function handleRatingReply(contactId: string, body: string | null) {
-  const match = body?.trim().match(/^[1-5]$/);
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+  });
+  // Já avaliou — não reenvia obrigado.
+  if (contact.rating != null) return;
+
+  const match = body?.trim().match(/(?:^|\D)([1-5])(?:\D|$)/);
   if (!match) {
-    const contact = await prisma.whatsAppContact.findUniqueOrThrow({
-      where: { id: contactId },
-    });
     const hint = "Por favor, responda apenas com um número de *1* a *5*.";
     let externalId: string | null = null;
     if (await messagingEnabled()) {
@@ -993,6 +1014,7 @@ export async function handleRatingReply(contactId: string, body: string | null) 
         text: hint,
         category: "service",
       });
+      if (!r.ok) console.error("[rating] hint falhou", r.error);
       externalId = r.externalId;
     }
     await upsertOutboundMessage({
@@ -1004,11 +1026,8 @@ export async function handleRatingReply(contactId: string, body: string | null) 
     return;
   }
 
-  const rating = Number(match[0]);
+  const rating = Number(match[1]);
   const thanks = `Obrigado pela avaliação (*${rating}*)! Até logo.`;
-  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
-    where: { id: contactId },
-  });
   let externalId: string | null = null;
   if (await messagingEnabled()) {
     const r = await sendOutbound({
@@ -1019,6 +1038,8 @@ export async function handleRatingReply(contactId: string, body: string | null) 
       text: thanks,
       category: "service",
     });
+    if (!r.ok) console.error("[rating] thanks falhou", contact.phone, r.error);
+    else console.log("[rating] ok", contact.phone, rating);
     externalId = r.externalId;
   }
   await upsertOutboundMessage({
