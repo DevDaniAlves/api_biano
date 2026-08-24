@@ -1583,6 +1583,8 @@ whatsappRouter.get("/users", async (_req, res) => {
       active: true,
       seeAllMessages: true,
       showInAttendantList: true,
+      flowAtendimento: true,
+      flowFinanceiro: true,
     },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
@@ -1605,6 +1607,8 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
       role?: "admin" | "seller";
       seeAllMessages?: boolean;
       showInAttendantList?: boolean;
+      flowAtendimento?: boolean;
+      flowFinanceiro?: boolean;
     } = {};
     if (typeof req.body?.active === "boolean") data.active = req.body.active;
     if (typeof req.body?.seeAllMessages === "boolean") {
@@ -1612,6 +1616,12 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
     }
     if (typeof req.body?.showInAttendantList === "boolean") {
       data.showInAttendantList = req.body.showInAttendantList;
+    }
+    if (typeof req.body?.flowAtendimento === "boolean") {
+      data.flowAtendimento = req.body.flowAtendimento;
+    }
+    if (typeof req.body?.flowFinanceiro === "boolean") {
+      data.flowFinanceiro = req.body.flowFinanceiro;
     }
     if (req.body?.role === "admin" || req.body?.role === "seller") {
       if (req.params.id === req.user!.id && req.body.role === "seller") {

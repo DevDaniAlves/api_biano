@@ -25,6 +25,24 @@ export function getVapidPublicKey() {
 }
 
 /** Badge do ícone: filas novas + mensagens não lidas em andamento. */
+async function openQueueCountForUser(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { flowAtendimento: true, flowFinanceiro: true },
+  });
+  const or: Array<{ botFlow: "atendimento" | "financeiro" | null }> = [];
+  if (user?.flowAtendimento !== false) {
+    or.push({ botFlow: "atendimento" }, { botFlow: null });
+  }
+  if (user?.flowFinanceiro) {
+    or.push({ botFlow: "financeiro" });
+  }
+  if (or.length === 0) return 0;
+  return prisma.whatsAppContact.count({
+    where: { status: "waiting", openToAll: true, OR: or },
+  });
+}
+
 export async function pendingBadgeCount(userId: string, role: "admin" | "seller") {
   if (await userCanSeeAllMessages(userId, role)) {
     const waiting = await prisma.whatsAppContact.count({ where: { status: "waiting" } });
@@ -38,9 +56,7 @@ export async function pendingBadgeCount(userId: string, role: "admin" | "seller"
   const waitingExclusive = await prisma.whatsAppContact.count({
     where: { status: "waiting", offeredToId: userId, openToAll: false },
   });
-  const waitingOpen = await prisma.whatsAppContact.count({
-    where: { status: "waiting", openToAll: true },
-  });
+  const waitingOpen = await openQueueCountForUser(userId);
   const unread = await prisma.whatsAppContact.aggregate({
     where: { status: "human", assignedToId: userId, unreadCount: { gt: 0 } },
     _sum: { unreadCount: true },

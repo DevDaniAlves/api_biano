@@ -39,10 +39,17 @@ enum MessageDirection {
   out
 }
 
-/** Etapa do menu do bot: departamento (financeiro/atendimento) ou escolha de vendedor */
+/** Etapa do menu do bot */
 enum BotMenuStep {
   department
   sellers
+  finance_sellers
+}
+
+/** Fluxo/setor escolhido pelo cliente no bot */
+enum ContactBotFlow {
+  atendimento
+  financeiro
 }
 
 model ScrapeJob {
@@ -99,6 +106,10 @@ model User {
   seeAllMessages Boolean            @default(false)
   /** Aparece no menu do bot para o cliente escolher. Ver todas / false = fora da lista. */
   showInAttendantList Boolean       @default(true)
+  /** Fluxo Atendimento (menu após opção 1) */
+  flowAtendimento     Boolean       @default(true)
+  /** Fluxo Financeiro (menu após opção 2 + info crediário) */
+  flowFinanceiro      Boolean       @default(false)
   createdAt     DateTime            @default(now())
   agents        WhatsAppAgent[]
   assigned      WhatsAppContact[]   @relation("AssignedContacts")
@@ -205,6 +216,8 @@ model WhatsAppContact {
   pushName             String?
   status               ContactStatus     @default(bot)
   botMenuStep          BotMenuStep       @default(department)
+  /** Setor do atendimento (após escolha no menu departamento) */
+  botFlow              ContactBotFlow?
   assignedToId         String?
   assignedTo           User?             @relation("AssignedContacts", fields: [assignedToId], references: [id], onDelete: SetNull)
   assignedAt           DateTime?
