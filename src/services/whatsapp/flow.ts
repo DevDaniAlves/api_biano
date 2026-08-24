@@ -119,7 +119,7 @@ export function buildMenuText(welcome: string, options: FlowOption[]): string {
   return `${welcome}\n\n${lines.join("\n")}`;
 }
 
-/** Menu ao vivo: vendedores na lista de atendentes (sem Ver todas), filtrados por fluxo. */
+/** Menu ao vivo: vendedores na lista de atendentes, filtrados por fluxo. */
 async function resolveMenuOptions(flow: BotFlowKind = "atendimento"): Promise<FlowOption[]> {
   const storedFlow = await getFlow();
   const stored = asOptions(storedFlow.options);
@@ -130,7 +130,6 @@ async function resolveMenuOptions(flow: BotFlowKind = "atendimento"): Promise<Fl
       active: true,
       role: "seller",
       showInAttendantList: true,
-      seeAllMessages: false,
       ...flowUserFilter(flow),
     },
     orderBy: { createdAt: "asc" },
@@ -478,7 +477,11 @@ export async function restartToBot(contactId: string) {
 }
 
 /** Menu departamento (Financeiro / Atendimento). */
-export async function sendDepartmentMenu(contactId: string, bodyText = DEPT_BODY) {
+export async function sendDepartmentMenu(
+  contactId: string,
+  bodyText = DEPT_BODY,
+  opts?: { force?: boolean }
+) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
@@ -492,8 +495,12 @@ export async function sendDepartmentMenu(contactId: string, bodyText = DEPT_BODY
     },
     select: { id: true },
   });
-  if (recentMenu) {
-    console.log("[bot] menu departamento já enviado, skip", contact.phone);
+  if (recentMenu && !opts?.force) {
+    console.log("[bot] menu departamento já enviado, skip reenvio", contact.phone);
+    await prisma.whatsAppContact.update({
+      where: { id: contactId },
+      data: { status: "bot", botMenuStep: "department", botFlow: null },
+    });
     return;
   }
   const interactive = {
@@ -513,9 +520,14 @@ export async function sendDepartmentMenu(contactId: string, bodyText = DEPT_BODY
     {
       status: "bot",
       botMenuStep: "department",
+      botFlow: null,
     },
     externalId
   );
+}
+
+async function goBackToDepartmentMenu(contactId: string) {
+  await sendDepartmentMenu(contactId, DEPT_BODY, { force: true });
 }
 
 /** Menu de vendedores / fila (Atendimento). */
@@ -768,7 +780,7 @@ export async function offerFromQueue(contactId: string, queueId: string) {
 
 export async function handleDepartmentChoice(contactId: string, raw: string) {
   if (isBackCommand(raw)) {
-    await sendDepartmentMenu(contactId);
+    await goBackToDepartmentMenu(contactId);
     return;
   }
 
@@ -813,7 +825,6 @@ async function resolveAgentUserId(
         active: true,
         role: "seller",
         showInAttendantList: true,
-        seeAllMessages: false,
         ...flowUserFilter(flow),
       },
       select: { id: true },
@@ -826,7 +837,6 @@ async function resolveAgentUserId(
       active: true,
       role: "seller",
       showInAttendantList: true,
-      seeAllMessages: false,
       ...flowUserFilter(flow),
     },
     orderBy: { createdAt: "asc" },
@@ -857,7 +867,7 @@ async function resendSellerMenu(contactId: string) {
 
 export async function handleMenuChoice(contactId: string, raw: string) {
   if (isBackCommand(raw)) {
-    await sendDepartmentMenu(contactId);
+    await goBackToDepartmentMenu(contactId);
     return;
   }
 
@@ -1031,7 +1041,7 @@ export async function processInboundBot(contactId: string, body: string | null, 
 
     if (contact.status === "bot") {
       if (isBackCommand(body)) {
-        await sendDepartmentMenu(contactId);
+        await goBackToDepartmentMenu(contactId);
         return;
       }
       if (body && /^\s*\d+/.test(body)) {
