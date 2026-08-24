@@ -217,10 +217,25 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
               })
             : null;
         const errors = Array.isArray(s.errors) ? s.errors : [];
-        const errMsg =
+        const err0 =
           errors[0] && typeof errors[0] === "object"
-            ? String((errors[0] as { message?: string }).message ?? "")
+            ? (errors[0] as {
+                code?: number;
+                title?: string;
+                message?: string;
+                error_data?: { details?: string };
+              })
             : null;
+        const errDetails = err0?.error_data?.details?.trim();
+        const errMsg = [err0?.message, errDetails].filter(Boolean).join(" — ") || null;
+        if (String(s.status ?? "") === "failed") {
+          console.error(
+            "[meta] status failed",
+            String(s.id ?? "").slice(0, 40),
+            err0?.code ?? "",
+            errMsg ?? "(sem detalhe)"
+          );
+        }
         await applyMetaStatus({
           wamid,
           status: String(s.status ?? ""),

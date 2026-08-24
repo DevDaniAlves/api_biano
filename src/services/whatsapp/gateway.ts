@@ -153,20 +153,44 @@ export async function sendOutbound(opts: {
         let mediaId: string | null = null;
         if (opts.media.base64) {
           const raw = opts.media.base64.replace(/^data:[^;]+;base64,/, "");
-          const buf = Buffer.from(raw, "base64");
-          const mime =
+          let buf = Buffer.from(raw, "base64");
+          let mime =
             opts.media.mimetype ||
             (opts.media.mediatype === "image"
               ? "image/jpeg"
               : opts.media.mediatype === "audio"
-                ? "audio/ogg"
+                ? "audio/webm"
                 : opts.media.mediatype === "video"
                   ? "video/mp4"
                   : "application/octet-stream");
+          let fileName = opts.media.fileName;
+          // MediaRecorder (webm/m4a/ogg) → MP3: Meta não aceita webm e rejeita ogg sem opus.
+          if (buf.length >= 40 && opts.media.mediatype === "audio") {
+            try {
+              const prep = await prepareGupshupAudioUpload({
+                buffer: buf,
+                mimetype: mime,
+                fileName,
+              });
+              buf = Buffer.from(prep.buffer);
+              mime = prep.mimetype;
+              fileName = prep.fileName;
+              console.log("[meta] audio preparado", mime, fileName);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              const errOut = `Áudio: conversão para MP3 falhou (${msg}).`;
+              console.error("[meta] audio prepare", msg);
+              await prisma.whatsAppSendLog.update({
+                where: { id: log.id },
+                data: { status: "failed", error: errOut },
+              });
+              return { ok: false, externalId: null, error: errOut, provider, logId: log.id };
+            }
+          }
           const up = await meta.uploadMedia({
             buffer: buf,
             mimetype: mime,
-            fileName: opts.media.fileName,
+            fileName,
           });
           if (!up.ok) {
             const error = `Upload mídia Meta: HTTP ${up.status}: ${up.text}`;

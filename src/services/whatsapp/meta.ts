@@ -370,12 +370,22 @@ export class MetaClient {
     if (opts.buffer.length < 40) {
       return { ok: false, status: 0, text: "Arquivo de mídia vazio" };
     }
-    const mime = (opts.mimetype || "application/octet-stream").split(";")[0].trim();
-    const name = opts.fileName || `media.${mime.split("/")[1] || "bin"}`;
+    const mimeRaw = (opts.mimetype || "application/octet-stream").trim();
+    // Meta exige "audio/ogg; codecs=opus" completo; para o restante, base type basta.
+    const mime = mimeRaw.toLowerCase().includes("ogg")
+      ? mimeRaw
+      : mimeRaw.split(";")[0].trim();
+    const name =
+      opts.fileName ||
+      `media.${mime.includes("mpeg") ? "mp3" : mime.split("/")[1]?.split(";")[0] || "bin"}`;
     const form = new FormData();
     form.append("messaging_product", "whatsapp");
     form.append("type", mime);
-    form.append("file", new Blob([Uint8Array.from(opts.buffer)], { type: mime }), name);
+    form.append(
+      "file",
+      new Blob([Uint8Array.from(opts.buffer)], { type: mime.split(";")[0].trim() }),
+      name
+    );
 
     try {
       const res = await fetch(`${GRAPH}/${encodeURIComponent(phoneNumberId)}/media`, {
