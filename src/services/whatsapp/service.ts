@@ -865,7 +865,7 @@ export async function assignContact(opts: {
     assignedAt = contact.assignedAt ?? now;
   }
 
-  return prisma.whatsAppContact.update({
+  const updated = await prisma.whatsAppContact.update({
     where: { id: opts.contactId },
     data: {
       ...(opts.userId !== undefined
@@ -889,6 +889,17 @@ export async function assignContact(opts: {
       queue: { select: { id: true, name: true } },
     },
   });
+
+  if (opts.userId) {
+    notifyUsersSafe([opts.userId], {
+      title: "Atendimento transferido",
+      body: `${contactDisplayName(updated)} foi atribuído a você`,
+      contactId: updated.id,
+      tag: `wa-assign-${updated.id}`,
+    });
+  }
+
+  return updated;
 }
 
 /** Finaliza atendimento e pede avaliação (1–5). */

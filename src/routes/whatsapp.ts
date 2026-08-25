@@ -987,8 +987,11 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
 
 whatsappRouter.post("/contacts/assign", async (req, res) => {
   try {
-    if (req.user?.role !== "admin") {
-      res.status(403).json({ error: "Só admin atribui conversas" });
+    const canTransfer =
+      req.user?.role === "admin" ||
+      (await userCanSeeAllMessages(req.user!.id, req.user!.role));
+    if (!canTransfer) {
+      res.status(403).json({ error: "Sem permissão para transferir conversas" });
       return;
     }
     const contactId = String(req.body?.contactId ?? "");
@@ -1013,8 +1016,11 @@ whatsappRouter.post("/contacts/assign", async (req, res) => {
 
 whatsappRouter.post("/contacts/open-to-all", async (req, res) => {
   try {
-    if (req.user?.role !== "admin") {
-      res.status(403).json({ error: "Só admin pode abrir conversa para todos" });
+    const canTransfer =
+      req.user?.role === "admin" ||
+      (await userCanSeeAllMessages(req.user!.id, req.user!.role));
+    if (!canTransfer) {
+      res.status(403).json({ error: "Sem permissão para abrir conversa para a equipe" });
       return;
     }
     const contactId = String(req.body?.contactId ?? "");
@@ -1022,9 +1028,14 @@ whatsappRouter.post("/contacts/open-to-all", async (req, res) => {
       res.status(400).json({ error: "contactId obrigatório" });
       return;
     }
+    const existing = await prisma.whatsAppContact.findUniqueOrThrow({
+      where: { id: contactId },
+      select: { botFlow: true, queueId: true },
+    });
     await openContactToAllSellers({
       contactId,
-      queueId: req.body?.queueId ?? undefined,
+      queueId: req.body?.queueId ?? existing.queueId ?? undefined,
+      flow: existing.botFlow === "financeiro" ? "financeiro" : "atendimento",
     });
     const contact = await prisma.whatsAppContact.findUniqueOrThrow({
       where: { id: contactId },

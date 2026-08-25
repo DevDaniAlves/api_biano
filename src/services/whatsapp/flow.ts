@@ -1146,12 +1146,15 @@ function clientIdleCutoffDate(): Date | null {
 function isClientIdleExpired(contact: {
   webhookPaused: boolean;
   status: string;
+  botFlow?: string | null;
   lastClientMessageAt: Date | null;
   updatedAt: Date;
 }): boolean {
   const cutoff = clientIdleCutoffDate();
   if (!cutoff) return false;
   if (contact.webhookPaused) return false;
+  // Auto-fecha só o fluxo Financeiro; Atendimento só finaliza manualmente.
+  if (contact.botFlow !== "financeiro") return false;
   if (!["bot", "waiting", "human", "awaiting_rating"].includes(contact.status)) return false;
   const last = contact.lastClientMessageAt ?? contact.updatedAt;
   return last < cutoff;
@@ -1202,6 +1205,7 @@ export async function expireClientIdleConversations() {
   const stale = await prisma.whatsAppContact.findMany({
     where: {
       webhookPaused: false,
+      botFlow: "financeiro",
       status: { in: ["bot", "waiting", "human", "awaiting_rating"] },
       OR: [
         { lastClientMessageAt: { lt: cutoff } },
@@ -1214,7 +1218,7 @@ export async function expireClientIdleConversations() {
   for (const c of stale) {
     await closeContactForClientIdle(c.id);
     console.log(
-      `[idle] cron ${env.CLIENT_IDLE_CLOSE_MINUTES}min sem cliente → closed: ${c.phone}`
+      `[idle] financeiro ${env.CLIENT_IDLE_CLOSE_MINUTES}min sem cliente → closed: ${c.phone}`
     );
   }
   return stale.length;
