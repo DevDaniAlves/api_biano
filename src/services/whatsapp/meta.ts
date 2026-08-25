@@ -541,6 +541,8 @@ export class MetaClient {
   /**
    * Upload resumável → handle para foto de perfil.
    * https://developers.facebook.com/docs/graph-api/guides/upload
+   * Importante: NÃO encodeURIComponent no session id (`upload:...?...`) —
+   * o `:` e o `?sig=` fazem parte do path/query oficiais da Meta.
    */
   async uploadProfilePicture(file: Buffer, mimeType: string, fileName: string) {
     const appId = (env.META_APP_ID || "").trim();
@@ -552,10 +554,26 @@ export class MetaClient {
         text: "META_APP_ID / META_ACCESS_TOKEN ausentes",
       };
     }
+
+    const mime = (mimeType || "image/jpeg").toLowerCase();
+    const allowed = new Set(["image/jpeg", "image/jpg", "image/png"]);
+    if (!allowed.has(mime)) {
+      return {
+        ok: false as const,
+        status: 400,
+        handle: null,
+        text: "Use JPEG ou PNG para foto de perfil",
+      };
+    }
+    const safeName =
+      mime.includes("png")
+        ? "profile.png"
+        : "profile.jpg";
+
     const startUrl = new URL(`${GRAPH}/${encodeURIComponent(appId)}/uploads`);
     startUrl.searchParams.set("file_length", String(file.length));
-    startUrl.searchParams.set("file_type", mimeType || "image/jpeg");
-    startUrl.searchParams.set("file_name", fileName || "profile.jpg");
+    startUrl.searchParams.set("file_type", mime === "image/jpg" ? "image/jpeg" : mime);
+    startUrl.searchParams.set("file_name", safeName);
     const startRes = await fetch(startUrl.toString(), {
       method: "POST",
       headers: { Authorization: `Bearer ${env.META_ACCESS_TOKEN}` },
@@ -589,12 +607,16 @@ export class MetaClient {
       };
     }
 
-    const uploadRes = await fetch(`${GRAPH}/${encodeURIComponent(sessionId)}`, {
+    // sessionId = "upload:<base64>?sig=..." — manter literal na URL
+    const uploadUrl = sessionId.startsWith("upload:")
+      ? `${GRAPH}/${sessionId}`
+      : `${GRAPH}/upload:${sessionId}`;
+    const uploadRes = await fetch(uploadUrl, {
       method: "POST",
       headers: {
         Authorization: `OAuth ${env.META_ACCESS_TOKEN}`,
         file_offset: "0",
-        "Content-Type": mimeType || "application/octet-stream",
+        "Content-Type": mime === "image/jpg" ? "image/jpeg" : mime,
       },
       body: new Uint8Array(file),
     });
