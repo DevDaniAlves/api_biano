@@ -122,6 +122,12 @@ function isApplePushEndpoint(endpoint: string) {
   return endpoint.includes("web.push.apple.com");
 }
 
+/** Apple Push exige topic ≤ 32 chars (URL / Base64 filename-safe). */
+function pushTopic(tag: string | undefined, contactId: string): string {
+  const raw = (tag || `wa-${contactId}`).replace(/[^A-Za-z0-9._-]/g, "");
+  return raw.slice(0, 32) || "wa-notify";
+}
+
 export async function notifyUsers(userIds: string[], payload: PushPayload) {
   const ids = [...new Set(userIds.filter(Boolean))];
   if (ids.length === 0) return;
@@ -162,6 +168,7 @@ export async function notifyUsers(userIds: string[], payload: PushPayload) {
       });
       try {
         const apple = isApplePushEndpoint(sub.endpoint);
+        const topic = pushTopic(payload.tag, payload.contactId);
         const result = await webpush.sendNotification(
           {
             endpoint: sub.endpoint,
@@ -171,7 +178,7 @@ export async function notifyUsers(userIds: string[], payload: PushPayload) {
           {
             urgency: "high",
             TTL: 86_400,
-            topic: payload.tag ?? `wa-${payload.contactId}`.slice(0, 32),
+            topic,
           }
         );
         if (apple) {
