@@ -791,11 +791,18 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     return;
   }
 
+  const afterHours = !isBusinessHours();
+
   // Claim atômico do passo departamento (evita 2 webhooks processarem o mesmo "1"/"2").
   const claimed = await prisma.whatsAppContact.updateMany({
     where: { id: contactId, status: "bot", botMenuStep: "department" },
     data: {
-      botMenuStep: key === "1" ? "sellers" : "finance_sellers",
+      botMenuStep:
+        key === "1"
+          ? "sellers"
+          : afterHours
+            ? "finance_after_hours"
+            : "finance_sellers",
       botFlow: key === "1" ? "atendimento" : "financeiro",
     },
   });
@@ -807,10 +814,18 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
   markMenuEchoGuard(contactId, key);
 
   if (key === "1") {
+    if (afterHours) {
+      await handleAfterHoursAtendimento(contactId);
+      return;
+    }
     await sendSellersMenu(contactId, "atendimento");
     return;
   }
 
+  if (afterHours) {
+    await handleAfterHoursFinanceiro(contactId);
+    return;
+  }
   await sendFinanceMenu(contactId);
 }
 
@@ -953,52 +968,103 @@ export async function handleMenuChoice(contactId: string, raw: string) {
   await persistIfSent(contactId, msg, undefined, externalId);
 }
 
-/** Fora do horário: avisa, sugere o catálogo e deixa na fila aberta. */
+/** Fora do horário: avisa, sugere o catálogo e pergunta o que busca. */
 export function buildOutsideHoursMessage(closedMessage: string) {
   const url = (env.CATALOG_PUBLIC_URL || "").replace(/\/+$/, "").trim();
   const base = closedMessage.trim();
-  if (!url) return base;
-  if (base.includes(url)) return base;
+  const withCatalog =
+    url && !base.includes(url)
+      ? `${base}\n\nEnquanto isso, dê uma olhada no nosso *catálogo* e conheça as novidades da Calangus:\n${url}`
+      : base;
   return (
-    `${base}\n\n` +
-    `Enquanto isso, dê uma olhada no nosso *catálogo* e conheça as novidades da Calangus:\n${url}`
+    `${withCatalog}\n\n` +
+    `Me conta o que você está buscando? Assim que um vendedor estiver disponível, alguém da nossa equipe irá te atender.`
   );
 }
 
-/** Fora do horário: avisa e deixa na fila aberta para depois. */
-export async function handleOutsideHours(contactId: string) {
+function financeAfterHoursMessage() {
+  return (
+    `${financeSelfServiceMessage()}\n\n` +
+    `Estamos fora do horário de atendimento financeiro. Digite *1* para entrar na fila e ser atendido no horário comercial.\n` +
+    `${BACK_HINT}`
+  );
+}
+
+/** Fora do horário + Atendimento: mensagem + fila aberta para a equipe. */
+export async function handleAfterHoursAtendimento(contactId: string) {
   const flow = await getFlow();
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
   const msg = buildOutsideHoursMessage(flow.closedMessage);
+  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+  await openContactToAllSellers({
+    contactId,
+    queueId: queue?.id ?? null,
+    flow: "atendimento",
+  });
+  const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  const externalId = await botSend(fresh, msg);
+  await persistIfSent(contactId, msg, undefined, externalId);
+}
+
+/** Fora do horário + Financeiro: crediário + digite 1 (ainda no bot). */
+export async function handleAfterHoursFinanceiro(contactId: string) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+  });
+  const msg = financeAfterHoursMessage();
+  const externalId = await botSend(contact, msg);
+  await persistIfSent(
+    contactId,
+    msg,
+    {
+      status: "bot",
+      botMenuStep: "finance_after_hours",
+      botFlow: "financeiro",
+    },
+    externalId
+  );
+}
+
+/** Cliente digitou 1 fora do horário no financeiro → fila da equipe financeira. */
+export async function handleFinanceAfterHoursConfirm(contactId: string, raw: string) {
+  if (isBackCommand(raw)) {
+    await goBackToDepartmentMenu(contactId);
+    return;
+  }
+
+  const key = raw.trim().replace(/[^\d]/g, "").slice(0, 1);
+  if (key !== "1") {
+    await handleAfterHoursFinanceiro(contactId);
+    return;
+  }
+
+  const claimed = await prisma.whatsAppContact.updateMany({
+    where: { id: contactId, status: "bot", botMenuStep: "finance_after_hours" },
+    data: { status: "waiting", botFlow: "financeiro" },
+  });
+  if (claimed.count === 0) {
+    const existing = await prisma.whatsAppContact.findUnique({ where: { id: contactId } });
+    if (existing?.status === "waiting" || existing?.status === "human") return;
+    await handleAfterHoursFinanceiro(contactId);
+    return;
+  }
+
+  markMenuEchoGuard(contactId, "1");
+  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+  await openContactToAllSellers({
+    contactId,
+    queueId: queue?.id ?? null,
+    flow: "financeiro",
+  });
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+  });
+  const msg =
+    "Certo! Você entrou na fila da *equipe financeira*. No horário comercial, *quem responder primeiro* irá te atender.";
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
-  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
-  const now = new Date();
-  const botFlow = contact.botFlow === "financeiro" ? "financeiro" : "atendimento";
-  const updated = await prisma.whatsAppContact.update({
-    where: { id: contactId },
-    data: {
-      status: "waiting",
-      queueId: queue?.id ?? null,
-      botFlow,
-      openToAll: true,
-      openedToAllAt: contact.openedToAllAt ?? now,
-      offeredToId: null,
-      offeredAt: null,
-      lastMessageAt: now,
-      lastMessagePreview: msg.slice(0, 120),
-    },
-  });
-  void recipientIdsForFlow(botFlow).then((ids) => {
-    notifyUsersSafe(ids, {
-      title: botFlow === "financeiro" ? "Financeiro — fora do horário" : "Nova conversa na fila",
-      body: `${contactDisplayName(updated)} está aguardando atendimento`,
-      contactId: updated.id,
-      tag: `wa-open-${updated.id}`,
-    });
-  });
 }
 
 export async function processInboundBot(contactId: string, body: string | null, isNew: boolean) {
@@ -1012,11 +1078,46 @@ export async function processInboundBot(contactId: string, body: string | null, 
     });
     if (existing.webhookPaused) return;
 
+    // Já na fila aberta: só registra msgs (webhook), bot não interfere.
+    if (existing.status === "waiting" && existing.openToAll) {
+      return;
+    }
+
     if (!isBusinessHours()) {
-      if (existing.status === "waiting" && existing.openToAll) {
+      if (shouldIgnoreEchoDigit(contactId, body)) return;
+
+      if (isNew || existing.status === "closed") {
+        await sendDepartmentMenu(contactId);
         return;
       }
-      await handleOutsideHours(contactId);
+
+      if (existing.status === "bot") {
+        if (isBackCommand(body)) {
+          await goBackToDepartmentMenu(contactId);
+          return;
+        }
+        if (existing.botMenuStep === "finance_after_hours") {
+          if (body && /^\s*\d+/.test(body)) {
+            await handleFinanceAfterHoursConfirm(contactId, body);
+          } else {
+            await handleAfterHoursFinanceiro(contactId);
+          }
+          return;
+        }
+        if (existing.botMenuStep === "department") {
+          if (body && /^\s*\d+/.test(body)) {
+            await handleDepartmentChoice(contactId, body);
+          } else {
+            await sendDepartmentMenu(contactId);
+          }
+          return;
+        }
+        // sellers/finance_sellers legado fora do horário → volta ao menu setor
+        await sendDepartmentMenu(contactId);
+        return;
+      }
+
+      // human / awaiting_rating fora do horário: não reinicia bot automaticamente
       return;
     }
 
@@ -1049,6 +1150,11 @@ export async function processInboundBot(contactId: string, body: string | null, 
           await handleDepartmentChoice(contactId, body);
           return;
         }
+        if (contact.botMenuStep === "finance_after_hours") {
+          // Horário voltou: confirmação 1 ainda abre fila financeira
+          await handleFinanceAfterHoursConfirm(contactId, body);
+          return;
+        }
         if (contact.botMenuStep === "sellers" || contact.botMenuStep === "finance_sellers") {
           await handleMenuChoice(contactId, body);
           return;
@@ -1056,6 +1162,8 @@ export async function processInboundBot(contactId: string, body: string | null, 
       }
       if (contact.botMenuStep === "sellers" || contact.botMenuStep === "finance_sellers") {
         await resendSellerMenu(contactId);
+      } else if (contact.botMenuStep === "finance_after_hours") {
+        await handleAfterHoursFinanceiro(contactId);
       } else {
         await sendDepartmentMenu(contactId);
       }
@@ -1146,6 +1254,7 @@ function clientIdleCutoffDate(): Date | null {
 function isClientIdleExpired(contact: {
   webhookPaused: boolean;
   status: string;
+  openToAll?: boolean;
   botFlow?: string | null;
   lastClientMessageAt: Date | null;
   updatedAt: Date;
@@ -1153,9 +1262,11 @@ function isClientIdleExpired(contact: {
   const cutoff = clientIdleCutoffDate();
   if (!cutoff) return false;
   if (contact.webhookPaused) return false;
-  // Auto-fecha só o fluxo Financeiro; Atendimento só finaliza manualmente.
+  // Fila aberta (fora do horário / sem preferência) nunca auto-finaliza.
+  if (contact.status === "waiting" && contact.openToAll) return false;
+  // Auto-fecha só o fluxo Financeiro em atendimento humano / bot; Atendimento só manual.
   if (contact.botFlow !== "financeiro") return false;
-  if (!["bot", "waiting", "human", "awaiting_rating"].includes(contact.status)) return false;
+  if (!["bot", "human", "awaiting_rating"].includes(contact.status)) return false;
   const last = contact.lastClientMessageAt ?? contact.updatedAt;
   return last < cutoff;
 }
@@ -1206,7 +1317,8 @@ export async function expireClientIdleConversations() {
     where: {
       webhookPaused: false,
       botFlow: "financeiro",
-      status: { in: ["bot", "waiting", "human", "awaiting_rating"] },
+      // Fila aberta (pendente) não vence — só bot / human / avaliação.
+      status: { in: ["bot", "human", "awaiting_rating"] },
       OR: [
         { lastClientMessageAt: { lt: cutoff } },
         { lastClientMessageAt: null, updatedAt: { lt: cutoff } },
@@ -1234,6 +1346,8 @@ export async function expireIdleConversations() {
   const stale = await prisma.whatsAppContact.findMany({
     where: {
       webhookPaused: false,
+      // Fila aberta (pendente p/ equipe) nunca auto-fecha.
+      NOT: { status: "waiting", openToAll: true },
       status: { in: ["bot", "waiting", "human", "awaiting_rating"] },
       OR: [
         { lastMessageAt: { lt: cutoff } },
@@ -1495,25 +1609,44 @@ export async function listContactsForUser(opts: {
 
   const seeAll = await userCanSeeAllMessages(opts.userId, opts.role);
 
-  if (seeAll) {
-    const sellerFilter = opts.sellerId
-      ? sellerScopeSync(opts.sellerId)
-      : {};
-    return prisma.whatsAppContact.findMany({
-      where: {
-        AND: [baseSearch, statusFilter, sellerFilter],
-      },
-      orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
-      include,
-    });
-  }
+  const rows = seeAll
+    ? await prisma.whatsAppContact.findMany({
+        where: {
+          AND: [
+            baseSearch,
+            statusFilter,
+            opts.sellerId ? sellerScopeSync(opts.sellerId) : {},
+          ],
+        },
+        orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
+        include,
+      })
+    : await prisma.whatsAppContact.findMany({
+        where: {
+          AND: [
+            baseSearch,
+            statusFilter,
+            await sellerScope(opts.userId, { includeOpenQueue: true }),
+          ],
+        },
+        orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
+        include,
+      });
 
-  return prisma.whatsAppContact.findMany({
-    where: {
-      AND: [baseSearch, statusFilter, await sellerScope(opts.userId, { includeOpenQueue: true })],
-    },
-    orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
-    include,
+  // Pendentes da fila aberta (fora do horário / sem preferência) sempre no topo;
+  // entre eles, os que esperam há mais tempo primeiro. Demais: recentes → antigos.
+  return [...rows].sort((a, b) => {
+    const aPin = a.status === "waiting" && a.openToAll ? 1 : 0;
+    const bPin = b.status === "waiting" && b.openToAll ? 1 : 0;
+    if (aPin !== bPin) return bPin - aPin;
+    if (aPin && bPin) {
+      const aWait = a.openedToAllAt?.getTime() ?? a.lastMessageAt?.getTime() ?? 0;
+      const bWait = b.openedToAllAt?.getTime() ?? b.lastMessageAt?.getTime() ?? 0;
+      if (aWait !== bWait) return aWait - bWait;
+    }
+    const aMsg = a.lastMessageAt?.getTime() ?? a.updatedAt.getTime();
+    const bMsg = b.lastMessageAt?.getTime() ?? b.updatedAt.getTime();
+    return bMsg - aMsg;
   });
 }
 

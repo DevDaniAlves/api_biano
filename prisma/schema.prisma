@@ -44,6 +44,8 @@ enum BotMenuStep {
   department
   sellers
   finance_sellers
+  /** Fora do horário: financeiro aguardando digite 1 para entrar na fila */
+  finance_after_hours
 }
 
 /** Fluxo/setor escolhido pelo cliente no bot */
