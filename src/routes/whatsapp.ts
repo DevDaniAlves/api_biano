@@ -44,6 +44,7 @@ import {
   resolveContact,
   seedDemoReports,
   sendImageMessage,
+  sendImageMessagesConcurrent,
   sendProductOutreach,
   sendTextMessage,
   warnInactivity,
@@ -1061,6 +1062,7 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
       return;
     }
     const publicUrl = `/uploads/${req.file.filename}`;
+    const clientKey = String(req.body?.clientKey ?? "").trim() || undefined;
     const msg = await sendImageMessage({
       contactId,
       userId: req.user!.id,
@@ -1071,8 +1073,61 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
       caption: req.body?.caption ? String(req.body.caption) : undefined,
       publicUrl,
       mediatype: mediaKind(req.file.mimetype),
+      clientKey,
     });
     res.json(msg);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Multi-foto concorrente (sem fila): upload N arquivos → envios paralelos à Meta. */
+whatsappRouter.post("/messages/images", upload.array("files", 12), async (req, res) => {
+  try {
+    const contactId = String(req.body?.contactId ?? "").trim();
+    const files = Array.isArray(req.files) ? (req.files as Express.Multer.File[]) : [];
+    if (!contactId || files.length === 0) {
+      res.status(400).json({ error: "contactId e files obrigatórios" });
+      return;
+    }
+    const caption = req.body?.caption ? String(req.body.caption).trim() : "";
+    const rawKeys = req.body?.clientKeys;
+    let clientKeys: string[] = [];
+    if (Array.isArray(rawKeys)) {
+      clientKeys = rawKeys.map((k) => String(k ?? ""));
+    } else if (typeof rawKeys === "string" && rawKeys.trim()) {
+      try {
+        const parsed = JSON.parse(rawKeys) as unknown;
+        clientKeys = Array.isArray(parsed) ? parsed.map((k) => String(k ?? "")) : [rawKeys];
+      } catch {
+        clientKeys = [rawKeys];
+      }
+    }
+
+    const results = await sendImageMessagesConcurrent({
+      contactId,
+      userId: req.user!.id,
+      role: req.user!.role as "admin" | "seller",
+      items: files.map((file, i) => ({
+        filePath: file.path,
+        mimetype: file.mimetype,
+        fileName: file.originalname,
+        publicUrl: `/uploads/${file.filename}`,
+        caption: i === 0 && caption ? caption : undefined,
+        clientKey: clientKeys[i] || undefined,
+      })),
+    });
+
+    const failed = results.filter((r) => !r.ok);
+    res.status(failed.length && failed.length === results.length ? 500 : 200).json({
+      results,
+      messages: results.filter((r) => r.ok).map((r) => r.message),
+      errors: failed.map((r) => ({
+        index: r.index,
+        clientKey: r.clientKey,
+        error: r.error,
+      })),
+    });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

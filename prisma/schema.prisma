@@ -256,6 +256,8 @@ model WhatsAppMessage {
   contactId        String
   contact          WhatsAppContact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
   externalId       String?
+  /** Key do cliente (1 request = 1 imagem); evita colapsar multi-foto. */
+  clientKey        String?
   direction        MessageDirection
   type             String           @default("text")
   body             String?
@@ -269,6 +271,7 @@ model WhatsAppMessage {
   createdAt        DateTime         @default(now())
 
   @@unique([contactId, externalId])
+  @@unique([contactId, clientKey])
   @@index([contactId, createdAt])
 }
 

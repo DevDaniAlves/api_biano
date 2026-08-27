@@ -308,12 +308,33 @@ async function upsertOutboundMessage(opts: {
   sentById?: string | null;
   externalId?: string | null;
   mediaUrl?: string | null;
+  clientKey?: string | null;
   quotedExternalId?: string | null;
   quotedBody?: string | null;
   quotedType?: string | null;
   quotedMediaUrl?: string | null;
 }) {
   const since = new Date(Date.now() - 120_000);
+  const clientKey = (opts.clientKey || "").trim() || null;
+
+  if (clientKey) {
+    const byKey = await prisma.whatsAppMessage.findUnique({
+      where: {
+        contactId_clientKey: { contactId: opts.contactId, clientKey },
+      },
+    });
+    if (byKey) {
+      return prisma.whatsAppMessage.update({
+        where: { id: byKey.id },
+        data: {
+          ...(opts.externalId && !byKey.externalId ? { externalId: opts.externalId } : {}),
+          ...(opts.sentById && !byKey.sentById ? { sentById: opts.sentById } : {}),
+          ...(opts.mediaUrl && !localUploadExists(byKey.mediaUrl) ? { mediaUrl: opts.mediaUrl } : {}),
+          ...(opts.body && !byKey.body ? { body: opts.body } : {}),
+        },
+      });
+    }
+  }
 
   if (opts.externalId) {
     const byExt = await prisma.whatsAppMessage.findUnique({
@@ -329,6 +350,7 @@ async function upsertOutboundMessage(opts: {
         ...(opts.sentById && !byExt.sentById ? { sentById: opts.sentById } : {}),
         ...(opts.mediaUrl && !localUploadExists(byExt.mediaUrl) ? { mediaUrl: opts.mediaUrl } : {}),
         ...(opts.body && !byExt.body ? { body: opts.body } : {}),
+        ...(clientKey && !byExt.clientKey ? { clientKey } : {}),
       };
       if (Object.keys(data).length) {
         return prisma.whatsAppMessage.update({ where: { id: byExt.id }, data });
@@ -337,26 +359,46 @@ async function upsertOutboundMessage(opts: {
     }
   }
 
-  const recent = await prisma.whatsAppMessage.findFirst({
-    where: {
-      contactId: opts.contactId,
-      direction: "out",
-      type: opts.type,
-      createdAt: { gte: since },
-      ...(opts.body != null ? { body: opts.body } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  if (recent) {
-    return prisma.whatsAppMessage.update({
-      where: { id: recent.id },
-      data: {
-        ...(opts.externalId && !recent.externalId ? { externalId: opts.externalId } : {}),
-        ...(opts.sentById && !recent.sentById ? { sentById: opts.sentById } : {}),
-        ...(opts.mediaUrl && !localUploadExists(recent.mediaUrl) ? { mediaUrl: opts.mediaUrl } : {}),
+  // Com clientKey: sempre cria linha nova (1 request = 1 mensagem).
+  // Sem key: mantém merge antigo só para eco webhook de texto.
+  if (!clientKey) {
+    const recent = await prisma.whatsAppMessage.findFirst({
+      where: {
+        contactId: opts.contactId,
+        direction: "out",
+        type: opts.type,
+        createdAt: { gte: since },
+        ...(opts.body != null ? { body: opts.body } : {}),
       },
+      orderBy: { createdAt: "desc" },
     });
+
+    if (recent) {
+      const isMedia = ["image", "video", "audio", "document"].includes(opts.type);
+      const differentMediaFile =
+        isMedia &&
+        Boolean(opts.mediaUrl) &&
+        Boolean(recent.mediaUrl) &&
+        opts.mediaUrl !== recent.mediaUrl &&
+        localUploadExists(recent.mediaUrl);
+      const differentExternal =
+        Boolean(opts.externalId) &&
+        Boolean(recent.externalId) &&
+        opts.externalId !== recent.externalId;
+
+      if (!differentMediaFile && !differentExternal) {
+        return prisma.whatsAppMessage.update({
+          where: { id: recent.id },
+          data: {
+            ...(opts.externalId && !recent.externalId ? { externalId: opts.externalId } : {}),
+            ...(opts.sentById && !recent.sentById ? { sentById: opts.sentById } : {}),
+            ...(opts.mediaUrl && !localUploadExists(recent.mediaUrl)
+              ? { mediaUrl: opts.mediaUrl }
+              : {}),
+          },
+        });
+      }
+    }
   }
 
   return prisma.whatsAppMessage.create({
@@ -368,6 +410,7 @@ async function upsertOutboundMessage(opts: {
       mediaUrl: opts.mediaUrl ?? null,
       sentById: opts.sentById ?? null,
       externalId: opts.externalId || null,
+      clientKey,
       quotedExternalId: opts.quotedExternalId ?? null,
       quotedBody: opts.quotedBody ?? null,
       quotedType: opts.quotedType ?? null,
@@ -841,6 +884,10 @@ export async function sendImageMessage(opts: {
   caption?: string;
   publicUrl: string;
   mediatype?: "image" | "audio" | "video" | "document";
+  /** Batch concorrente: assume uma vez fora. */
+  skipAssume?: boolean;
+  /** Key única do cliente (1 request = 1 mídia). */
+  clientKey?: string;
 }) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: opts.contactId },
@@ -854,7 +901,7 @@ export async function sendImageMessage(opts: {
   const role = opts.role ?? "seller";
   const alreadyMine =
     contact.status === "human" && contact.assignedToId === opts.userId;
-  if (!alreadyMine && role !== "admin") {
+  if (!alreadyMine && role !== "admin" && !opts.skipAssume) {
     await assumeOnOpen(opts.contactId, opts.userId, role);
   }
   if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado (Evolution, Meta ou Gupshup)");
@@ -906,6 +953,7 @@ export async function sendImageMessage(opts: {
     mediaUrl: opts.publicUrl,
     sentById: opts.userId,
     externalId,
+    clientKey: opts.clientKey ?? null,
   });
   await prisma.whatsAppContact.update({
     where: { id: contact.id },
@@ -934,6 +982,79 @@ export async function sendImageMessage(opts: {
   }
 
   return msg;
+}
+
+/**
+ * Várias mídias em paralelo (Promise.all) — acelera atendimento multi-foto.
+ * Sem fila Kafka: I/O da Meta já é concorrente por request.
+ */
+export async function sendImageMessagesConcurrent(opts: {
+  contactId: string;
+  userId: string;
+  role?: "admin" | "seller";
+  items: Array<{
+    filePath: string;
+    mimetype: string;
+    fileName: string;
+    publicUrl: string;
+    caption?: string;
+    clientKey?: string;
+  }>;
+}) {
+  const role = opts.role ?? "seller";
+  if (!opts.items.length)
+    return [] as Array<{
+      ok: boolean;
+      clientKey?: string;
+      index: number;
+      message?: Awaited<ReturnType<typeof sendImageMessage>>;
+      error?: string;
+    }>;
+
+  if (role !== "admin") {
+    await assumeOnOpen(opts.contactId, opts.userId, role).catch(() => {});
+  }
+
+  const settled = await Promise.all(
+    opts.items.map(async (item, index) => {
+      try {
+        const message = await sendImageMessage({
+          contactId: opts.contactId,
+          userId: opts.userId,
+          role,
+          filePath: item.filePath,
+          mimetype: item.mimetype,
+          fileName: item.fileName,
+          publicUrl: item.publicUrl,
+          caption: item.caption,
+          clientKey: item.clientKey,
+          mediatype: item.mimetype.startsWith("image/")
+            ? "image"
+            : item.mimetype.startsWith("video/")
+              ? "video"
+              : item.mimetype.startsWith("audio/")
+                ? "audio"
+                : "document",
+          skipAssume: true,
+        });
+        return {
+          ok: true as const,
+          index,
+          clientKey: item.clientKey,
+          message,
+        };
+      } catch (err) {
+        return {
+          ok: false as const,
+          index,
+          clientKey: item.clientKey,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    })
+  );
+
+  return settled.sort((a, b) => a.index - b.index);
 }
 
 export async function assignContact(opts: {
