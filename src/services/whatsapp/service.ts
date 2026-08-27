@@ -732,6 +732,105 @@ export async function sendTextMessage(opts: {
   return msg;
 }
 
+/** Disparo proativo: template Marketing com foto do produto + nome do cliente/produto. */
+export async function sendProductOutreach(opts: {
+  contactId: string;
+  productName: string;
+  userId: string;
+  role?: "admin" | "seller";
+  filePath: string;
+  mimetype: string;
+  fileName: string;
+  publicUrl: string;
+}) {
+  const productName = opts.productName.trim();
+  if (!productName) throw new Error("Informe o nome do produto");
+  if (!opts.filePath || !fs.existsSync(opts.filePath)) {
+    throw new Error("Envie a foto do produto");
+  }
+
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: opts.contactId },
+  });
+  const role = opts.role ?? "seller";
+  const provider = await activeProvider();
+  if (provider !== "meta") {
+    throw new Error("Entrar em contato com foto exige provider Meta (Cloud API)");
+  }
+  if (!meta.enabled) throw new Error("Meta não configurada");
+
+  const templateName = (env.META_PRODUTO_TEMPLATE_NAME || "produto_disponivel").trim();
+  const clientName =
+    (contact.name || contact.pushName || "Cliente").trim().slice(0, 60) || "Cliente";
+
+  const buf = fs.readFileSync(opts.filePath);
+  const up = await meta.uploadMedia({
+    buffer: buf,
+    mimetype: opts.mimetype || "image/jpeg",
+    fileName: opts.fileName || "produto.jpg",
+  });
+  if (!up.ok) {
+    throw new Error(`Upload foto Meta: HTTP ${up.status}: ${up.text}`);
+  }
+
+  const preview = `Produto disponível: ${productName}`;
+  const r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "agent",
+    contactId: contact.id,
+    kind: "template",
+    category: "marketing",
+    billable: true,
+    bodyPreview: preview,
+    template: {
+      name: templateName,
+      language: env.META_BOLETO_TEMPLATE_LANG || "pt_BR",
+      components: [
+        {
+          type: "header",
+          parameters: [{ type: "image", image: { id: up.id } }],
+        },
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: clientName },
+            { type: "text", text: productName.slice(0, 60) },
+          ],
+        },
+      ],
+    },
+  });
+  if (!r.ok) throw new Error(`Falha ao enviar template: ${r.error}`);
+
+  if (role !== "admin") {
+    await assumeOnOpen(opts.contactId, opts.userId, role).catch(() => {});
+  }
+  await setWebhookPaused(contact.id, true).catch(() => {});
+
+  const msg = await upsertOutboundMessage({
+    contactId: contact.id,
+    type: "image",
+    body: preview,
+    mediaUrl: opts.publicUrl,
+    sentById: opts.userId,
+    externalId: r.externalId,
+  });
+
+  await prisma.whatsAppContact.update({
+    where: { id: contact.id },
+    data: {
+      lastMessageAt: new Date(),
+      lastMessagePreview: preview.slice(0, 120),
+      webhookPaused: true,
+      ...(role === "admin"
+        ? {}
+        : { status: "human" as const, assignedToId: opts.userId }),
+    },
+  });
+
+  return msg;
+}
+
 export async function sendImageMessage(opts: {
   contactId: string;
   userId: string;

@@ -43,6 +43,8 @@ const schema = z.object({
   /** Nome do template Utility aprovado para disparo de boletos. */
   META_BOLETO_TEMPLATE_NAME: z.string().optional(),
   META_BOLETO_TEMPLATE_LANG: z.string().default("pt_BR"),
+  /** Template Marketing aprovado: produto disponível (HEADER IMAGE + nome + produto). */
+  META_PRODUTO_TEMPLATE_NAME: z.string().default("produto_disponivel"),
   /** Estimativa R$/msg faturável até rate card oficial set/2026. */
   META_ESTIMATED_BRL_PER_MSG: z.coerce.number().default(0.05),
   /** Key do Settings do app (console novo: BianoWhats → Settings). */

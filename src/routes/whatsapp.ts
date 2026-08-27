@@ -44,6 +44,7 @@ import {
   resolveContact,
   seedDemoReports,
   sendImageMessage,
+  sendProductOutreach,
   sendTextMessage,
   warnInactivity,
 } from "../services/whatsapp/service.js";
@@ -427,6 +428,12 @@ whatsappRouter.post("/gupshup/settings", async (req, res) => {
 const DEFAULT_BOLETO_BODY =
   "Olá {{1}}, tudo bem?\n\nPassando para lembrar que sua parcela de R$ {{2}} vence em {{3}}.\n\nPara consultar e pagar, acesse o link a seguir e entre com CPF e data de nascimento:\n{{4}}\n\nCaso já tenha efetuado o pagamento, por favor desconsidere esta mensagem.\n\nAtenciosamente,\nCalangus Moda Jovem";
 
+/** Marketing: avisar cliente que o produto de interesse chegou. HEADER = IMAGE (foto). */
+const DEFAULT_PRODUTO_BODY =
+  "Olá {{1}}! Tudo bem?\n\nBoa notícia: o produto que você demonstrou interesse chegou na Calangus.\n\n📦 {{2}}\n\nSe quiser garantir o seu, responda esta mensagem que a gente te atende por aqui.\n\nCalangus Moda Jovem";
+
+const DEFAULT_PRODUTO_EXAMPLES = ["Maria Silva", "Vestido Floral M"];
+
 whatsappRouter.post("/meta/settings", async (req, res) => {
   try {
     if (req.user?.role !== "admin") {
@@ -590,6 +597,20 @@ whatsappRouter.get("/meta/templates", async (_req, res) => {
         category: "UTILITY",
         bodyText: DEFAULT_BOLETO_BODY,
         bodyExamples: ["Maria", "129,90", "20/08/2026", "https://calangusmoda.crediario.digital/login"],
+        headerFormat: null,
+      },
+      defaultProduto: {
+        name: "produto_disponivel",
+        language: env.META_BOLETO_TEMPLATE_LANG || "pt_BR",
+        category: "MARKETING",
+        bodyText: DEFAULT_PRODUTO_BODY,
+        bodyExamples: DEFAULT_PRODUTO_EXAMPLES,
+        headerFormat: "IMAGE",
+        vars: [
+          { n: 1, label: "Nome do cliente" },
+          { n: 2, label: "Nome do produto" },
+        ],
+        note: "A foto do produto vai no HEADER (IMAGE) no envio — não é variável do texto.",
       },
     });
   } catch (err) {
@@ -597,7 +618,17 @@ whatsappRouter.get("/meta/templates", async (_req, res) => {
   }
 });
 
-whatsappRouter.post("/meta/templates", async (req, res) => {
+whatsappRouter.post(
+  "/meta/templates",
+  (req, res, next) => {
+    const ct = String(req.headers["content-type"] || "");
+    if (ct.includes("multipart/form-data")) {
+      upload.single("file")(req, res, next);
+      return;
+    }
+    next();
+  },
+  async (req, res) => {
   try {
     if (!meta.enabled) {
       res.status(400).json({ error: "Meta não configurada" });
@@ -610,13 +641,73 @@ whatsappRouter.post("/meta/templates", async (req, res) => {
       | "UTILITY"
       | "MARKETING"
       | "AUTHENTICATION";
-    const replaceExisting = Boolean(req.body?.replaceExisting);
-    const bodyExamples = Array.isArray(req.body?.bodyExamples)
-      ? (req.body.bodyExamples as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean)
-      : [];
+    const replaceExisting =
+      req.body?.replaceExisting === true ||
+      req.body?.replaceExisting === "true" ||
+      req.body?.replaceExisting === "1";
+    let bodyExamples: string[] = [];
+    if (Array.isArray(req.body?.bodyExamples)) {
+      bodyExamples = (req.body.bodyExamples as unknown[])
+        .map((x) => String(x ?? "").trim())
+        .filter(Boolean);
+    } else if (typeof req.body?.bodyExamples === "string" && req.body.bodyExamples.trim()) {
+      try {
+        const parsed = JSON.parse(req.body.bodyExamples) as unknown;
+        if (Array.isArray(parsed)) {
+          bodyExamples = parsed.map((x) => String(x ?? "").trim()).filter(Boolean);
+        }
+      } catch {
+        bodyExamples = String(req.body.bodyExamples)
+          .split("|")
+          .map((x: string) => x.trim())
+          .filter(Boolean);
+      }
+    }
+    const headerFormat =
+      String(req.body?.headerFormat ?? "").trim().toUpperCase() === "IMAGE" ? "IMAGE" : null;
+    let headerHandle = String(req.body?.headerHandle ?? "").trim() || null;
+    const headerSampleUrl = String(req.body?.headerSampleUrl ?? "").trim();
     if (!name || !bodyText) {
       res.status(400).json({ error: "name e bodyText obrigatórios" });
       return;
+    }
+    if (headerFormat === "IMAGE" && !headerHandle && req.file) {
+      const buf = fs.readFileSync(req.file.path);
+      const up = await meta.uploadTemplateHeaderHandle({
+        buffer: buf,
+        mimeType: req.file.mimetype || "image/jpeg",
+        fileName: req.file.originalname || "template_sample.jpg",
+      });
+      if (!up.ok) {
+        res.status(up.status || 400).json({ error: up.text.slice(0, 800) });
+        return;
+      }
+      headerHandle = up.handle;
+    }
+    if (headerFormat === "IMAGE" && !headerHandle && headerSampleUrl) {
+      if (!/^https:\/\//i.test(headerSampleUrl)) {
+        res.status(400).json({ error: "headerSampleUrl deve ser HTTPS público" });
+        return;
+      }
+      const imgRes = await fetch(headerSampleUrl);
+      if (!imgRes.ok) {
+        res.status(400).json({ error: `Não baixou a imagem de exemplo (${imgRes.status})` });
+        return;
+      }
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      const mime =
+        imgRes.headers.get("content-type")?.split(";")[0].trim() ||
+        (headerSampleUrl.toLowerCase().includes(".png") ? "image/png" : "image/jpeg");
+      const up = await meta.uploadTemplateHeaderHandle({
+        buffer: buf,
+        mimeType: mime,
+        fileName: "template_sample.jpg",
+      });
+      if (!up.ok) {
+        res.status(up.status || 400).json({ error: up.text.slice(0, 800) });
+        return;
+      }
+      headerHandle = up.handle;
     }
     if (replaceExisting) {
       const del = await meta.deleteMessageTemplate(name);
@@ -635,6 +726,8 @@ whatsappRouter.post("/meta/templates", async (req, res) => {
         category === "MARKETING" || category === "AUTHENTICATION" ? category : "UTILITY",
       bodyText,
       bodyExamples,
+      headerFormat,
+      headerHandle,
     });
     if (!r.ok) {
       res.status(r.status || 400).json({ error: r.text.slice(0, 800), data: r.data });
@@ -978,6 +1071,36 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
       caption: req.body?.caption ? String(req.body.caption) : undefined,
       publicUrl,
       mediatype: mediaKind(req.file.mimetype),
+    });
+    res.json(msg);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Template Marketing: avisar cliente que o produto chegou (foto + nome). */
+whatsappRouter.post("/messages/product-outreach", upload.single("file"), async (req, res) => {
+  try {
+    const contactId = String(req.body?.contactId ?? "").trim();
+    const productName = String(req.body?.productName ?? "").trim();
+    if (!contactId || !productName || !req.file) {
+      res.status(400).json({ error: "contactId, productName e foto obrigatórios" });
+      return;
+    }
+    if (!req.file.mimetype.startsWith("image/")) {
+      res.status(400).json({ error: "Envie uma imagem (JPG/PNG)" });
+      return;
+    }
+    const publicUrl = `/uploads/${req.file.filename}`;
+    const msg = await sendProductOutreach({
+      contactId,
+      productName,
+      userId: req.user!.id,
+      role: req.user!.role as "admin" | "seller",
+      filePath: req.file.path,
+      mimetype: req.file.mimetype,
+      fileName: req.file.originalname,
+      publicUrl,
     });
     res.json(msg);
   } catch (err) {

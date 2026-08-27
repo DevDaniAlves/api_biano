@@ -188,12 +188,81 @@ export class MetaClient {
     return { ...r, templates };
   }
 
+  /**
+   * Upload de mídia de exemplo para header de template (Resumable Upload → header_handle).
+   * Diferente de uploadMedia (Cloud API /media), que serve só para envio de mensagens.
+   */
+  async uploadTemplateHeaderHandle(opts: {
+    buffer: Buffer;
+    mimeType: string;
+    fileName?: string;
+  }): Promise<{ ok: true; handle: string } | { ok: false; status: number; text: string }> {
+    const appId = (env.META_APP_ID || "").trim();
+    if (!appId || !env.META_ACCESS_TOKEN) {
+      return { ok: false, status: 0, text: "META_APP_ID / META_ACCESS_TOKEN ausentes" };
+    }
+    if (opts.buffer.length < 40) {
+      return { ok: false, status: 0, text: "Imagem de exemplo vazia" };
+    }
+    const mime = (opts.mimeType || "image/jpeg").split(";")[0].trim() || "image/jpeg";
+    const fileName = opts.fileName || `sample.${mime.includes("png") ? "png" : "jpg"}`;
+    try {
+      const startUrl =
+        `${GRAPH}/${encodeURIComponent(appId)}/uploads` +
+        `?file_length=${opts.buffer.length}` +
+        `&file_type=${encodeURIComponent(mime)}` +
+        `&file_name=${encodeURIComponent(fileName)}`;
+      const startRes = await fetch(startUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.META_ACCESS_TOKEN}` },
+      });
+      const startText = await startRes.text().catch(() => "");
+      let startData: { id?: string } | null = null;
+      try {
+        startData = startText ? (JSON.parse(startText) as { id?: string }) : null;
+      } catch {
+        startData = null;
+      }
+      const sessionId = String(startData?.id ?? "").trim();
+      if (!startRes.ok || !sessionId) {
+        return { ok: false, status: startRes.status, text: startText.slice(0, 500) };
+      }
+
+      const upRes = await fetch(`${GRAPH}/${encodeURIComponent(sessionId)}`, {
+        method: "POST",
+        headers: {
+          Authorization: `OAuth ${env.META_ACCESS_TOKEN}`,
+          file_offset: "0",
+          "Content-Type": mime,
+        },
+        body: Uint8Array.from(opts.buffer),
+      });
+      const upText = await upRes.text().catch(() => "");
+      let upData: { h?: string } | null = null;
+      try {
+        upData = upText ? (JSON.parse(upText) as { h?: string }) : null;
+      } catch {
+        upData = null;
+      }
+      const handle = String(upData?.h ?? "").trim();
+      if (!upRes.ok || !handle) {
+        return { ok: false, status: upRes.status, text: upText.slice(0, 500) };
+      }
+      return { ok: true, handle };
+    } catch (err) {
+      return { ok: false, status: 0, text: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   async createMessageTemplate(opts: {
     name: string;
     language?: string;
     category?: "UTILITY" | "MARKETING" | "AUTHENTICATION";
     bodyText: string;
     bodyExamples: string[];
+    /** HEADER IMAGE — a foto do produto vai no envio; aqui só o sample de aprovação. */
+    headerFormat?: "IMAGE" | null;
+    headerHandle?: string | null;
   }) {
     const wabaId = await this.resolveWabaId();
     if (!wabaId) {
@@ -229,12 +298,31 @@ export class MetaClient {
       bodyComponent.example = { body_text: [examples] };
     }
 
+    const components: Record<string, unknown>[] = [];
+    if (opts.headerFormat === "IMAGE") {
+      const handle = String(opts.headerHandle ?? "").trim();
+      if (!handle) {
+        return {
+          ok: false as const,
+          status: 0,
+          data: null,
+          text: "Template com foto exige headerHandle (imagem de exemplo enviada à Meta)",
+        };
+      }
+      components.push({
+        type: "HEADER",
+        format: "IMAGE",
+        example: { header_handle: [handle] },
+      });
+    }
+    components.push(bodyComponent);
+
     return this.graph("POST", `/${encodeURIComponent(wabaId)}/message_templates`, {
       name,
       language,
       category,
       parameter_format: "positional",
-      components: [bodyComponent],
+      components,
     });
   }
 
