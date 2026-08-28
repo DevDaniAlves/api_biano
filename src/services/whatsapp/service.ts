@@ -419,6 +419,71 @@ async function upsertOutboundMessage(opts: {
   });
 }
 
+/** Grava conversa do disparo de boleto para aparecer no menu WhatsApp (admin). */
+export async function recordBoletoDispatchConversation(opts: {
+  phone: string;
+  clienteNome: string;
+  bodyPreview: string;
+  externalId?: string | null;
+  boletoId: string;
+  logId?: string;
+}) {
+  const phone = opts.phone.replace(/\D/g, "");
+  if (phone.length < 12) return null;
+
+  const nome = opts.clienteNome.trim();
+  const preview = opts.bodyPreview.replace(/\s+/g, " ").trim().slice(0, 120);
+  const now = new Date();
+
+  const existing = await prisma.whatsAppContact.findUnique({ where: { phone } });
+  const contact = await prisma.whatsAppContact.upsert({
+    where: { phone },
+    create: {
+      phone,
+      remoteJid: `${phone}@s.whatsapp.net`,
+      savedName: nome || null,
+      pushName: nome || null,
+      name: nome || null,
+      status: "closed",
+      botFlow: "financeiro",
+      lastMessageAt: now,
+      lastMessagePreview: preview,
+      boletoReminderAt: now,
+    },
+    update: {
+      lastMessageAt: now,
+      lastMessagePreview: preview,
+      boletoReminderAt: now,
+      ...(nome && !existing?.savedName ? { savedName: nome } : {}),
+      ...(nome && !existing?.name ? { name: nome } : {}),
+      ...(nome && !existing?.pushName ? { pushName: nome } : {}),
+      ...(!existing?.botFlow ? { botFlow: "financeiro" as const } : {}),
+    },
+  });
+
+  await upsertOutboundMessage({
+    contactId: contact.id,
+    type: "template",
+    body: opts.bodyPreview,
+    externalId: opts.externalId ?? null,
+    clientKey: `boleto-${opts.boletoId}`,
+  });
+
+  if (opts.logId) {
+    await prisma.whatsAppSendLog.update({
+      where: { id: opts.logId },
+      data: { contactId: contact.id },
+    });
+  } else {
+    await prisma.whatsAppSendLog.updateMany({
+      where: { boletoId: opts.boletoId, contactId: null },
+      data: { contactId: contact.id },
+    });
+  }
+
+  return contact.id;
+}
+
 export function contactFlags(contact: {
   status: string;
   lastClientMessageAt: Date | null;
@@ -453,6 +518,7 @@ export async function listContacts(opts: {
   return contacts.map((c) => ({
     ...serializeContact(c),
     ...contactFlags(c),
+    isBoletoReminder: Boolean(c.boletoReminderAt),
   }));
 }
 
@@ -517,6 +583,7 @@ export async function listMessages(
     contact: {
       ...serializeContact(contact),
       ...contactFlags(contact),
+      isBoletoReminder: Boolean(contact.boletoReminderAt),
     },
     messages: withQuotedPayload(messages, contactDisplayName(contact)),
     readOnly:
@@ -1409,7 +1476,11 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
       lastMessageAt: new Date(),
       lastMessagePreview: (body ?? "").slice(0, 120),
       ...(!fromMe
-        ? { unreadCount: { increment: 1 }, lastClientMessageAt: new Date() }
+        ? {
+            unreadCount: { increment: 1 },
+            lastClientMessageAt: new Date(),
+            boletoReminderAt: null,
+          }
         : {}),
     },
   });

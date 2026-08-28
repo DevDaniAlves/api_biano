@@ -3,6 +3,7 @@ import { env } from "../config.js";
 import { prisma } from "../db.js";
 import type { CsvBoletoRow } from "./csv.js";
 import { activeProvider, sendOutbound } from "./whatsapp/gateway.js";
+import { recordBoletoDispatchConversation } from "./whatsapp/service.js";
 import { evolution } from "./whatsapp/evolution.js";
 
 export async function upsertBoletosFromCsv(
@@ -100,7 +101,7 @@ async function sendWhatsApp(
   phone: string,
   text: string,
   boleto: Boleto
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; externalId?: string | null; logId?: string }> {
   const number = phone.replace(/\D/g, "");
   if (number.length < 12) return { ok: false, error: `Telefone inválido: ${phone}` };
 
@@ -141,7 +142,7 @@ async function sendWhatsApp(
         ],
       },
     });
-    return { ok: r.ok, error: r.error };
+    return { ok: r.ok, error: r.error, externalId: r.externalId, logId: r.logId };
   }
 
   if (provider === "gupshup") {
@@ -175,7 +176,7 @@ async function sendWhatsApp(
         ],
       },
     });
-    return { ok: r.ok, error: r.error };
+    return { ok: r.ok, error: r.error, externalId: r.externalId, logId: r.logId };
   }
 
   const instance = await evolution.resolveInstance();
@@ -192,7 +193,7 @@ async function sendWhatsApp(
     billable: false,
     bodyPreview: text,
   });
-  return { ok: r.ok, error: r.error };
+  return { ok: r.ok, error: r.error, externalId: r.externalId, logId: r.logId };
 }
 
 function sleep(ms: number) {
@@ -282,6 +283,19 @@ export async function dispatchPending(vencimento?: string) {
 
       if (result.ok) {
         console.log(`[dispatch] OK #${b.id}`);
+        await recordBoletoDispatchConversation({
+          phone,
+          clienteNome: b.clienteNome,
+          bodyPreview: text,
+          externalId: result.externalId,
+          boletoId: b.id,
+          logId: result.logId,
+        }).catch((err) =>
+          console.warn(
+            "[dispatch] conversa WhatsApp:",
+            err instanceof Error ? err.message : String(err)
+          )
+        );
         await prisma.boleto.update({
           where: { id: b.id },
           data: { status: "sent", dispatchedAt: new Date(), dispatchError: null },

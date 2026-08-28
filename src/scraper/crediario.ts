@@ -454,7 +454,7 @@ export function mapApiItem(item: Record<string, unknown>): CsvBoletoRow | null {
   );
   if (!parcela) {
     const n = get("numeroParcela", "nrParcela", "parcelaNumero");
-    const t = get("totalParcelas", "qtdParcelas", "quantidadeParcelas");
+    const t = get("totalParcelas", "qtdParcelas", "quantidadeParcelas", "quantidade_parcelas");
     if (n && t) parcela = `${n}/${t}`;
     else if (n) parcela = n;
   }
@@ -491,6 +491,7 @@ export function mapApiItem(item: Record<string, unknown>): CsvBoletoRow | null {
   const valorVencimento = parseMoney(
     get(
       "valorVencimento",
+      "valorvencimento",
       "vlVencimento",
       "valorDeVencimento",
       "valor",
@@ -501,10 +502,12 @@ export function mapApiItem(item: Record<string, unknown>): CsvBoletoRow | null {
 
   return {
     externalId: `${contrato}-${parcela}-${vencimento}`,
-    cpf: get("cpf", "cpfCliente", "documento", "cliente.cpf", "nrCpf"),
+    cpf: get("cpf", "cpfcnpj", "cpfCliente", "documento", "cliente.cpf", "nrCpf"),
     clienteNome,
     clienteTelefone: normalizePhone(
       get(
+        "telcelular",
+        "telCelular",
         "telefone",
         "telefoneCliente",
         "celular",
@@ -512,12 +515,17 @@ export function mapApiItem(item: Record<string, unknown>): CsvBoletoRow | null {
         "whatsapp",
         "cliente.telefone",
         "nrTelefone",
-        "telefoneCelular"
+        "telefoneCelular",
+        "telresidencial",
+        "telResidencial",
+        "telcomercial",
+        "telComercial"
       )
     ),
     codigoCliente: get(
       "codigoCliente",
       "codCliente",
+      "cliente_id",
       "idCliente",
       "cliente.codigo",
       "cdCliente",
@@ -531,7 +539,7 @@ export function mapApiItem(item: Record<string, unknown>): CsvBoletoRow | null {
     parcela,
     vencimento,
     valorVencimento,
-    totalPago: nullableMoney(get("totalPago", "vlTotalPago", "valorPago", "total_pago")),
+    totalPago: nullableMoney(get("totalPago", "totalpago", "vlTotalPago", "valorPago", "total_pago")),
     valorQuitacao: nullableMoney(
       get(
         "valorQuitacao",
@@ -542,7 +550,7 @@ export function mapApiItem(item: Record<string, unknown>): CsvBoletoRow | null {
       )
     ),
     capitalAberto: nullableMoney(
-      get("capitalAberto", "vlCapitalAberto", "capital", "capitalEmAberto", "vlCapital")
+      get("capitalAberto", "capitalaberto", "vlCapitalAberto", "capital", "capitalEmAberto", "vlCapital")
     ),
     descontoQuitacao: nullableMoney(
       get("descontoQuitacao", "vlDescontoQuitacao", "descontoDeQuitacao")

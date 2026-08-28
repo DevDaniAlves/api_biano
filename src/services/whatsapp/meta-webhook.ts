@@ -204,6 +204,7 @@ async function upsertInboundMessage(opts: {
       lastMessagePreview: opts.body.slice(0, 120),
       unreadCount: { increment: 1 },
       lastClientMessageAt: new Date(),
+      boletoReminderAt: null,
     },
   });
 

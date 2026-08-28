@@ -240,6 +240,8 @@ model WhatsAppContact {
   lastMessageAt        DateTime?
   lastMessagePreview   String?
   lastClientMessageAt  DateTime?
+  /** Disparo automático de cobrança — exibe badge LEMBRETE_BOLETO até o cliente responder. */
+  boletoReminderAt     DateTime?
   inactivityWarnedAt   DateTime?
   rating               Int?
   ratingAskedAt        DateTime?
