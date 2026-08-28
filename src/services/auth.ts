@@ -10,6 +10,7 @@ export interface AuthUser {
   email: string;
   role: "admin" | "seller";
   seeAllMessages?: boolean;
+  canManageCatalog?: boolean;
 }
 
 declare global {
@@ -52,6 +53,7 @@ export function authRequired(req: Request, res: Response, next: NextFunction) {
           role: true,
           active: true,
           seeAllMessages: true,
+          canManageCatalog: true,
         },
       })
       .then((row) => {
@@ -65,6 +67,7 @@ export function authRequired(req: Request, res: Response, next: NextFunction) {
           email: row.email,
           role: row.role,
           seeAllMessages: Boolean(row.seeAllMessages),
+          canManageCatalog: row.role === "admin" || Boolean(row.canManageCatalog),
         };
         next();
       })
@@ -85,6 +88,15 @@ export function adminRequired(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+/** Admin ou permissão Gerenciar catálogo. */
+export function catalogManageRequired(req: Request, res: Response, next: NextFunction) {
+  if (req.user?.role === "admin" || req.user?.canManageCatalog) {
+    next();
+    return;
+  }
+  res.status(403).json({ error: "Sem permissão para gerenciar catálogo" });
+}
+
 export async function login(email: string, password: string) {
   const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
   if (!user || !user.active) return null;
@@ -96,6 +108,7 @@ export async function login(email: string, password: string) {
     email: user.email,
     role: user.role,
     seeAllMessages: Boolean(user.seeAllMessages),
+    canManageCatalog: user.role === "admin" || Boolean(user.canManageCatalog),
   };
   return { user: payload, token: signToken(payload) };
 }

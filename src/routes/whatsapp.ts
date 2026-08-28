@@ -116,7 +116,18 @@ whatsappRouter.post("/auth/login", async (req, res) => {
 whatsappRouter.get("/auth/me", authRequired, async (req, res) => {
   const row = await prisma.user.findUnique({
     where: { id: req.user!.id },
-    select: { id: true, name: true, email: true, role: true, active: true, seeAllMessages: true, showInAttendantList: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      active: true,
+      seeAllMessages: true,
+      showInAttendantList: true,
+      flowAtendimento: true,
+      flowFinanceiro: true,
+      canManageCatalog: true,
+    },
   });
   if (!row?.active) {
     res.status(401).json({ error: "Usuário inativo" });
@@ -130,6 +141,9 @@ whatsappRouter.get("/auth/me", authRequired, async (req, res) => {
       role: row.role,
       seeAllMessages: Boolean(row.seeAllMessages),
       showInAttendantList: row.showInAttendantList !== false,
+      flowAtendimento: row.flowAtendimento !== false,
+      flowFinanceiro: Boolean(row.flowFinanceiro),
+      canManageCatalog: row.role === "admin" || Boolean(row.canManageCatalog),
     },
   });
 });
@@ -1774,6 +1788,7 @@ whatsappRouter.get("/users", async (_req, res) => {
       showInAttendantList: true,
       flowAtendimento: true,
       flowFinanceiro: true,
+      canManageCatalog: true,
     },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
@@ -1798,6 +1813,7 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
       showInAttendantList?: boolean;
       flowAtendimento?: boolean;
       flowFinanceiro?: boolean;
+      canManageCatalog?: boolean;
     } = {};
     if (typeof req.body?.active === "boolean") data.active = req.body.active;
     if (typeof req.body?.seeAllMessages === "boolean") {
@@ -1811,6 +1827,9 @@ whatsappRouter.patch("/users/:id", async (req, res) => {
     }
     if (typeof req.body?.flowFinanceiro === "boolean") {
       data.flowFinanceiro = req.body.flowFinanceiro;
+    }
+    if (typeof req.body?.canManageCatalog === "boolean") {
+      data.canManageCatalog = req.body.canManageCatalog;
     }
     if (req.body?.role === "admin" || req.body?.role === "seller") {
       if (req.params.id === req.user!.id && req.body.role === "seller") {
