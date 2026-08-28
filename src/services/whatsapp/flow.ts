@@ -119,12 +119,8 @@ export function buildMenuText(welcome: string, options: FlowOption[]): string {
   return `${welcome}\n\n${lines.join("\n")}`;
 }
 
-/** Menu ao vivo: vendedores na lista de atendentes, filtrados por fluxo. */
-async function resolveMenuOptions(flow: BotFlowKind = "atendimento"): Promise<FlowOption[]> {
-  const storedFlow = await getFlow();
-  const stored = asOptions(storedFlow.options);
-  const queueFromFlow = stored.find((o) => o.action === "queue");
-
+/** Vendedores elegíveis para aparecer no menu (sem folga/férias ativas). */
+async function fetchAttendantSellersForMenu(flow: BotFlowKind = "atendimento") {
   const sellers = await prisma.user.findMany({
     where: {
       active: true,
@@ -135,6 +131,28 @@ async function resolveMenuOptions(flow: BotFlowKind = "atendimento"): Promise<Fl
     orderBy: { createdAt: "asc" },
     select: { id: true, name: true },
   });
+  if (!sellers.length) return sellers;
+
+  const now = new Date();
+  const leaves = await prisma.userLeave.findMany({
+    where: {
+      userId: { in: sellers.map((s) => s.id) },
+      startsAt: { lte: now },
+      endsAt: { gte: now },
+    },
+    select: { userId: true },
+  });
+  const onLeave = new Set(leaves.map((l) => l.userId));
+  return sellers.filter((s) => !onLeave.has(s.id));
+}
+
+/** Menu ao vivo: vendedores na lista de atendentes, filtrados por fluxo. */
+async function resolveMenuOptions(flow: BotFlowKind = "atendimento"): Promise<FlowOption[]> {
+  const storedFlow = await getFlow();
+  const stored = asOptions(storedFlow.options);
+  const queueFromFlow = stored.find((o) => o.action === "queue");
+
+  const sellers = await fetchAttendantSellersForMenu(flow);
 
   const options: FlowOption[] = sellers.map((s, i) => ({
     key: String(i + 1),
@@ -847,16 +865,7 @@ async function resolveAgentUserId(
     if (user) return user.id;
   }
 
-  const sellers = await prisma.user.findMany({
-    where: {
-      active: true,
-      role: "seller",
-      showInAttendantList: true,
-      ...flowUserFilter(flow),
-    },
-    orderBy: { createdAt: "asc" },
-    select: { id: true, name: true },
-  });
+  const sellers = await fetchAttendantSellersForMenu(flow);
   const byName = sellers.find(
     (s) => s.name.trim().toLowerCase() === choice.label.trim().toLowerCase()
   );
