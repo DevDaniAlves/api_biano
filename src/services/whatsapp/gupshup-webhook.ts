@@ -127,6 +127,9 @@ async function applyInboundMessage(parsed: ParsedGupshup) {
       lastMessagePreview: parsed.body.slice(0, 120),
       unreadCount: { increment: 1 },
       lastClientMessageAt: new Date(),
+      lastMessageDirection: "in",
+      inactivityWarnedAt: null,
+      sellerInactivityNotifiedAt: null,
       boletoReminderAt: null,
     },
   });

@@ -200,10 +200,13 @@ async function upsertInboundMessage(opts: {
   await prisma.whatsAppContact.update({
     where: { id: contact.id },
     data: {
+      unreadCount: { increment: 1 },
       lastMessageAt: new Date(),
       lastMessagePreview: opts.body.slice(0, 120),
-      unreadCount: { increment: 1 },
       lastClientMessageAt: new Date(),
+      lastMessageDirection: "in",
+      inactivityWarnedAt: null,
+      sellerInactivityNotifiedAt: null,
       boletoReminderAt: null,
     },
   });

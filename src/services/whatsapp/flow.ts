@@ -1296,6 +1296,8 @@ function idleCloseResetData() {
     openToAll: false,
     queueId: null,
     inactivityWarnedAt: null,
+    sellerInactivityNotifiedAt: null,
+    lastMessageDirection: null,
     ratingAskedAt: null,
     unreadCount: 0,
   };

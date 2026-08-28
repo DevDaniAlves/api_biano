@@ -241,10 +241,14 @@ model WhatsAppContact {
   queue                WhatsAppQueue?    @relation(fields: [queueId], references: [id], onDelete: SetNull)
   lastMessageAt        DateTime?
   lastMessagePreview   String?
+  /** Quem deve responder: última msg in = aguardando vendedor; out = aguardando cliente. */
+  lastMessageDirection MessageDirection?
   lastClientMessageAt  DateTime?
   /** Disparo automático de cobrança — exibe badge LEMBRETE_BOLETO até o cliente responder. */
   boletoReminderAt     DateTime?
   inactivityWarnedAt   DateTime?
+  /** Push in-app enviado — cliente aguardando vendedor (sem msg automática ao cliente). */
+  sellerInactivityNotifiedAt DateTime?
   rating               Int?
   ratingAskedAt        DateTime?
   unreadCount          Int               @default(0)

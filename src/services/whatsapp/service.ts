@@ -24,11 +24,72 @@ export const UPLOADS_DIR = path.resolve(env.UPLOADS_DIR || path.join(process.cwd
 export { listContactsForUser, assumeOnOpen, expireStaleRatings, openContactToAllSellers } from "./flow.js";
 export { saveContactSavedName } from "./contacts.js";
 
+/** Atualiza metadados do contato após nova mensagem (direção define quem deve responder). */
+export async function touchContactAfterMessage(
+  contactId: string,
+  direction: "in" | "out",
+  preview: string
+) {
+  const now = new Date();
+  const base = {
+    lastMessageAt: now,
+    lastMessagePreview: preview.slice(0, 120),
+    lastMessageDirection: direction,
+  };
+  if (direction === "in") {
+    await prisma.whatsAppContact.update({
+      where: { id: contactId },
+      data: {
+        ...base,
+        lastClientMessageAt: now,
+        inactivityWarnedAt: null,
+        sellerInactivityNotifiedAt: null,
+        boletoReminderAt: null,
+      },
+    });
+  } else {
+    await prisma.whatsAppContact.update({
+      where: { id: contactId },
+      data: {
+        ...base,
+        inactivityWarnedAt: null,
+        sellerInactivityNotifiedAt: null,
+      },
+    });
+  }
+}
+
+async function ensureLastMessageDirection(contactId: string): Promise<"in" | "out" | null> {
+  const row = await prisma.whatsAppContact.findUnique({
+    where: { id: contactId },
+    select: { lastMessageDirection: true },
+  });
+  if (row?.lastMessageDirection) return row.lastMessageDirection;
+  const last = await prisma.whatsAppMessage.findFirst({
+    where: { contactId },
+    orderBy: [{ createdAt: "desc" }],
+    select: { direction: true },
+  });
+  if (!last) return null;
+  await prisma.whatsAppContact.update({
+    where: { id: contactId },
+    data: { lastMessageDirection: last.direction },
+  });
+  return last.direction;
+}
+
+function waitingOnClient(contact: { lastMessageDirection?: "in" | "out" | null }) {
+  return contact.lastMessageDirection === "out";
+}
+
+function waitingOnSeller(contact: { lastMessageDirection?: "in" | "out" | null }) {
+  return contact.lastMessageDirection === "in";
+}
+
 const RATING_MSG =
   "Como foi o atendimento? Responda com uma nota de *1* a *5* (sendo 5 excelente). Obrigado!";
 
-const INACTIVITY_RECOVERY_MSG =
-  "Olá! Você ainda está por aí? 😊\n\nEstamos aqui caso precise de algo — é só responder esta mensagem que continuamos o atendimento.";
+const INACTIVITY_RECOVERY_MSG = "Olá! Você ainda está por aí? 😊";
 
 const INACTIVITY_CLOSE_MSG =
   "Como não recebemos retorno, vamos encerrar este atendimento por enquanto.\n\nQuando quiser falar conosco de novo, é só enviar uma mensagem. Até logo! 👋";
@@ -493,18 +554,30 @@ export async function recordBoletoDispatchConversation(opts: {
 export function contactFlags(contact: {
   status: string;
   lastClientMessageAt: Date | null;
+  lastMessageAt: Date | null;
+  lastMessageDirection?: "in" | "out" | null;
   inactivityWarnedAt: Date | null;
 }) {
   const now = Date.now();
-  const lastClient = contact.lastClientMessageAt?.getTime() ?? 0;
-  const inactiveMs = lastClient ? now - lastClient : 0;
   const warnMs = env.INACTIVITY_WARN_MINUTES * 60_000;
   const resolveMs = env.INACTIVITY_RESOLVE_MINUTES * 60_000;
   const isHuman = contact.status === "human";
+  const onClient = waitingOnClient(contact);
+  const onSeller = waitingOnSeller(contact);
+
+  const lastOut = onClient ? (contact.lastMessageAt?.getTime() ?? 0) : 0;
+  const clientInactiveMs = lastOut ? now - lastOut : 0;
+
+  const lastClient = contact.lastClientMessageAt?.getTime() ?? 0;
+  const sellerInactiveMs = onSeller && lastClient ? now - lastClient : 0;
+
   return {
-    canWarnInactivity: isHuman && inactiveMs >= warnMs,
-    canResolveInactivity: isHuman && inactiveMs >= resolveMs,
-    inactiveMinutes: lastClient ? Math.floor(inactiveMs / 60_000) : 0,
+    waitingOn: onClient ? ("client" as const) : onSeller ? ("seller" as const) : null,
+    canWarnInactivity: isHuman && onClient && clientInactiveMs >= warnMs,
+    canResolveInactivity: isHuman && onClient && clientInactiveMs >= resolveMs,
+    inactiveMinutes: onClient && lastOut ? Math.floor(clientInactiveMs / 60_000) : 0,
+    sellerInactive: isHuman && onSeller && sellerInactiveMs >= warnMs,
+    sellerInactiveMinutes: onSeller && lastClient ? Math.floor(sellerInactiveMs / 60_000) : 0,
   };
 }
 
@@ -836,14 +909,13 @@ export async function sendTextMessage(opts: {
     quotedType: quoted?.quotedType ?? null,
     quotedMediaUrl: quoted?.quotedMediaUrl ?? null,
   });
-  await prisma.whatsAppContact.update({
-    where: { id: contact.id },
-    data: {
-      lastMessageAt: new Date(),
-      lastMessagePreview: text.slice(0, 120),
-      ...(role === "admin" ? {} : { status: "human" as const, assignedToId: opts.userId }),
-    },
-  });
+  await touchContactAfterMessage(contact.id, "out", text);
+  if (role !== "admin") {
+    await prisma.whatsAppContact.update({
+      where: { id: contact.id },
+      data: { status: "human", assignedToId: opts.userId },
+    });
+  }
 
   return msg;
 }
@@ -1262,6 +1334,13 @@ export async function warnInactivity(contactId: string, userId: string) {
   if (contact.webhookPaused) {
     throw new Error("Cliente em atendimento manual");
   }
+  const direction =
+    contact.lastMessageDirection ?? (await ensureLastMessageDirection(contactId));
+  if (direction !== "out") {
+    throw new Error(
+      "A última mensagem foi do cliente — responda no chat. Mensagens de inatividade só quando o cliente não responde."
+    );
+  }
   const flags = contactFlags(contact);
   if (!flags.canWarnInactivity) {
     throw new Error(
@@ -1288,14 +1367,10 @@ export async function warnInactivity(contactId: string, userId: string) {
     sentById: userId,
     externalId: r.externalId,
   });
-
+  await touchContactAfterMessage(contactId, "out", text);
   return prisma.whatsAppContact.update({
     where: { id: contactId },
-    data: {
-      inactivityWarnedAt: new Date(),
-      lastMessageAt: new Date(),
-      lastMessagePreview: text.slice(0, 120),
-    },
+    data: { inactivityWarnedAt: new Date() },
   });
 }
 
@@ -1316,19 +1391,15 @@ async function sendSystemText(contactId: string, text: string) {
     body: text,
     externalId: r.externalId,
   });
-  await prisma.whatsAppContact.update({
-    where: { id: contactId },
-    data: {
-      lastMessageAt: new Date(),
-      lastMessagePreview: text.slice(0, 120),
-    },
-  });
+  await touchContactAfterMessage(contactId, "out", text);
 }
 
-/** Recuperação automática após INACTIVITY_WARN_MINUTES sem resposta do cliente. */
+/** Recuperação automática — só se a última msg foi nossa (cliente deve responder). */
 export async function autoWarnInactivity(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
   if (contact.webhookPaused || contact.status !== "human" || contact.inactivityWarnedAt) return false;
+  const direction = contact.lastMessageDirection ?? (await ensureLastMessageDirection(contactId));
+  if (direction !== "out") return false;
   const flags = contactFlags(contact);
   if (!flags.canWarnInactivity) return false;
   if (!(await messagingEnabled())) return false;
@@ -1347,22 +1418,21 @@ export async function autoWarnInactivity(contactId: string) {
     return false;
   }
   await upsertOutboundMessage({ contactId, type: "text", body: text, externalId: r.externalId });
+  await touchContactAfterMessage(contactId, "out", text);
   await prisma.whatsAppContact.update({
     where: { id: contactId },
-    data: {
-      inactivityWarnedAt: new Date(),
-      lastMessageAt: new Date(),
-      lastMessagePreview: text.slice(0, 120),
-    },
+    data: { inactivityWarnedAt: new Date() },
   });
   console.log(`[idle] aviso ${env.INACTIVITY_WARN_MINUTES}min → ${contact.phone}`);
   return true;
 }
 
-/** Finalização automática após INACTIVITY_RESOLVE_MINUTES sem resposta do cliente. */
+/** Finalização automática — só se o cliente não respondeu após nossa última msg. */
 export async function autoResolveInactivity(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
   if (contact.webhookPaused || contact.status !== "human") return false;
+  const direction = contact.lastMessageDirection ?? (await ensureLastMessageDirection(contactId));
+  if (direction !== "out") return false;
   const flags = contactFlags(contact);
   if (!flags.canResolveInactivity) return false;
   if (!(await messagingEnabled())) return false;
@@ -1373,9 +1443,9 @@ export async function autoResolveInactivity(contactId: string) {
   return true;
 }
 
-/** Cron: aviso e encerramento automáticos por inatividade do cliente. */
+/** Cron: aviso/encerramento ao cliente + alerta in-app ao vendedor. */
 export async function processAutoInactivity() {
-  if (!(await messagingEnabled())) return { warned: 0, closed: 0 };
+  if (!(await messagingEnabled())) return { warned: 0, closed: 0, sellerAlerts: 0 };
   const warnCutoff = new Date(Date.now() - env.INACTIVITY_WARN_MINUTES * 60_000);
   const resolveCutoff = new Date(Date.now() - env.INACTIVITY_RESOLVE_MINUTES * 60_000);
 
@@ -1383,8 +1453,9 @@ export async function processAutoInactivity() {
     where: {
       status: "human",
       webhookPaused: false,
+      lastMessageDirection: "out",
       inactivityWarnedAt: null,
-      lastClientMessageAt: { lt: warnCutoff },
+      lastMessageAt: { lt: warnCutoff },
     },
     take: 80,
   });
@@ -1402,8 +1473,9 @@ export async function processAutoInactivity() {
     where: {
       status: "human",
       webhookPaused: false,
+      lastMessageDirection: "out",
       inactivityWarnedAt: { not: null },
-      lastClientMessageAt: { lt: resolveCutoff },
+      lastMessageAt: { lt: resolveCutoff },
     },
     take: 80,
   });
@@ -1417,7 +1489,52 @@ export async function processAutoInactivity() {
     }
   }
 
-  return { warned, closed };
+  const sellerAlerts = await processSellerInactivityAlerts(warnCutoff);
+  return { warned, closed, sellerAlerts };
+}
+
+/** Cliente aguardando vendedor — só notifica no app, sem msg ao cliente. */
+async function processSellerInactivityAlerts(cutoff: Date): Promise<number> {
+  const waiting = await prisma.whatsAppContact.findMany({
+    where: {
+      status: "human",
+      webhookPaused: false,
+      lastMessageDirection: "in",
+      lastClientMessageAt: { lt: cutoff },
+      sellerInactivityNotifiedAt: null,
+    },
+    take: 80,
+  });
+
+  let sent = 0;
+  for (const c of waiting) {
+    try {
+      const recipients: string[] = [];
+      if (c.assignedToId) recipients.push(c.assignedToId);
+      else if (c.offeredToId) recipients.push(c.offeredToId);
+      else if (c.openToAll && c.queueId) {
+        const ids = await recipientIdsForOpenQueue(c.queueId);
+        recipients.push(...ids);
+      }
+      const unique = [...new Set(recipients.filter(Boolean))];
+      if (!unique.length) continue;
+
+      notifyUsersSafe(unique, {
+        title: "Cliente aguardando resposta",
+        body: `${contactDisplayName(c)} está esperando há ${env.INACTIVITY_WARN_MINUTES}+ min`,
+        contactId: c.id,
+        tag: `wa-seller-idle-${c.id}`,
+      });
+      await prisma.whatsAppContact.update({
+        where: { id: c.id },
+        data: { sellerInactivityNotifiedAt: new Date() },
+      });
+      sent++;
+    } catch (err) {
+      console.error("[idle] seller alert", c.phone, err);
+    }
+  }
+  return sent;
 }
 
 export type StoreLocationConfig = {
@@ -1549,14 +1666,13 @@ export async function sendLocationMessage(opts: {
     externalId: r.externalId,
   });
 
-  await prisma.whatsAppContact.update({
-    where: { id: contact.id },
-    data: {
-      lastMessageAt: new Date(),
-      lastMessagePreview: body.slice(0, 120),
-      ...(role === "admin" ? {} : { status: "human" as const, assignedToId: opts.userId }),
-    },
-  });
+  await touchContactAfterMessage(contact.id, "out", body);
+  if (role !== "admin") {
+    await prisma.whatsAppContact.update({
+      where: { id: contact.id },
+      data: { status: "human", assignedToId: opts.userId },
+    });
+  }
 
   return msg;
 }
@@ -1747,10 +1863,16 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
         ? {
             unreadCount: { increment: 1 },
             lastClientMessageAt: new Date(),
+            lastMessageDirection: "in" as const,
             inactivityWarnedAt: null,
+            sellerInactivityNotifiedAt: null,
             boletoReminderAt: null,
           }
-        : {}),
+        : {
+            lastMessageDirection: "out" as const,
+            inactivityWarnedAt: null,
+            sellerInactivityNotifiedAt: null,
+          }),
     },
   });
 
