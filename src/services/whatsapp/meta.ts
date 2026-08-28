@@ -442,7 +442,10 @@ export class MetaClient {
     });
   }
 
-  /** Cartão Pix com botão Copiar (Payments BR / pix_dynamic_code). */
+  /**
+   * Offsite Pix — order_details + pix_dynamic_code (Meta Payments BR).
+   * @see https://developers.facebook.com/documentation/business-messaging/whatsapp/payments/payments-br/offsite-pix
+   */
   buildPixInteractivePayload(opts: {
     merchantName: string;
     key: string;
@@ -450,6 +453,7 @@ export class MetaClient {
     bodyText?: string;
     referenceId?: string;
     merchantCity?: string;
+    totalAmountCents?: number;
   }) {
     const referenceId = (opts.referenceId ?? `pix-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 60);
     const normalizedKey =
@@ -470,6 +474,7 @@ export class MetaClient {
       receiverCity,
       referenceLabel: buildBrCodeRef(referenceId),
     });
+    const totalCents = Math.max(1, opts.totalAmountCents ?? env.PIX_TOTAL_AMOUNT_CENTS ?? 100);
     return {
       type: "order_details",
       body: { text: opts.bodyText?.trim() || "Segue nossa chave Pix 👇" },
@@ -480,7 +485,7 @@ export class MetaClient {
           type: "digital-goods",
           payment_type: "br",
           currency: "BRL",
-          total_amount: { value: 100, offset: 100 },
+          total_amount: { value: totalCents, offset: 100 },
           payment_settings: [
             {
               type: "pix_dynamic_code",
@@ -497,36 +502,47 @@ export class MetaClient {
     };
   }
 
-  /** Opção 1: card interativo com chave Pix no corpo + botão de resposta (janela 24h). */
-  buildPixShareButtonPayload(opts: {
+  /** Texto formatado com chave Pix (sem botão — reply não copia na Meta). */
+  buildPixShareText(opts: {
     merchantName: string;
     keyLabel: string;
     rawKey: string;
     preamble?: string;
   }) {
-    const bodyLines = [
+    return [
       opts.preamble?.trim(),
+      `💳 *${opts.merchantName.trim() || "Pix"}*`,
       opts.keyLabel,
       "",
       "Toque e segure a chave abaixo para copiar:",
       `\`\`\`${opts.rawKey}\`\`\``,
-    ].filter((line) => line != null && line !== "");
-    const body = bodyLines.join("\n").slice(0, 1024);
-    const merchant = opts.merchantName.trim().slice(0, 60) || "Pix";
-    return {
+    ]
+      .filter((line) => line != null && line !== "")
+      .join("\n")
+      .slice(0, 4096);
+  }
+
+  /** Componentes para template Marketing com botão Copiar código (coupon_code, máx. 20 chars). */
+  buildPixCopyCodeTemplateComponents(opts: {
+    rawKey: string;
+    bodyLines?: string[];
+  }) {
+    const code = opts.rawKey.slice(0, 20);
+    if (!code) throw new Error("Chave Pix vazia para template COPY_CODE");
+    const components: Record<string, unknown>[] = [];
+    if (opts.bodyLines?.length) {
+      components.push({
+        type: "body",
+        parameters: opts.bodyLines.map((text) => ({ type: "text", text: text.slice(0, 1024) })),
+      });
+    }
+    components.push({
       type: "button",
-      header: { type: "text", text: merchant },
-      body: { text: body },
-      footer: { text: "Chave Pix" },
-      action: {
-        buttons: [
-          {
-            type: "reply",
-            reply: { id: "pix_confirmado", title: "Já efetuei pagamento" },
-          },
-        ],
-      },
-    };
+      sub_type: "copy_code",
+      index: 0,
+      parameters: [{ type: "coupon_code", coupon_code: code }],
+    });
+    return components;
   }
 
   async sendPixStaticKey(opts: {

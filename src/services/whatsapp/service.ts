@@ -1794,23 +1794,82 @@ export async function sendPixKeyMessage(opts: {
   const keyLabel = `${pixKeyTypeLabel(cfg.keyType)}: ${formatPixKeyDisplay(cfg.key, cfg.keyType)}`;
   const provider = await activeProvider();
   const pixMode = env.PIX_SEND_MODE;
+  const pixTemplateName = (env.PIX_TEMPLATE_NAME || "").trim();
   const storedBody = [cfg.message?.trim(), bodyPreview, "", `Chave: ${rawKey}`]
     .filter((line) => line != null && line !== "")
     .join("\n");
 
-  async function sendPixInteractiveCard() {
-    const interactive = meta.buildPixShareButtonPayload({
-      merchantName,
-      keyLabel,
+  if (rawKey.length > 20 && (pixMode === "template" || (pixMode === "auto" && pixTemplateName))) {
+    throw new Error(
+      "Chave Pix maior que 20 caracteres — botão Copiar da Meta não suporta. Use CNPJ/CPF/celular ou modo text."
+    );
+  }
+
+  async function sendPixCopyCodeTemplate() {
+    if (!pixTemplateName) {
+      throw new Error(
+        "PIX_TEMPLATE_NAME não configurado. Crie um template com botão Copiar código no Gerenciador do WhatsApp."
+      );
+    }
+    const bodyVarCount = env.PIX_TEMPLATE_BODY_VARS;
+    const bodyLines =
+      bodyVarCount >= 2
+        ? [merchantName, keyLabel]
+        : bodyVarCount === 1
+          ? [keyLabel]
+          : undefined;
+    const components = meta.buildPixCopyCodeTemplateComponents({
       rawKey,
-      preamble: cfg.message ?? undefined,
+      bodyLines,
     });
     return sendOutbound({
       to: contact.remoteJid || contact.phone,
       source: "agent",
       contactId: contact.id,
-      kind: "interactive",
-      interactive,
+      kind: "template",
+      template: {
+        name: pixTemplateName,
+        language: env.PIX_TEMPLATE_LANG,
+        components,
+      },
+      category: "marketing",
+      bodyPreview,
+    });
+  }
+
+  async function sendPixTextCard() {
+    const text = await sellerPrefix(
+      opts.userId,
+      meta.buildPixShareText({
+        merchantName,
+        keyLabel,
+        rawKey,
+        preamble: cfg.message ?? undefined,
+      })
+    );
+    return sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "agent",
+      contactId: contact.id,
+      kind: "text",
+      text,
+      category: "service",
+      bodyPreview,
+    });
+  }
+
+  async function sendPixOffsiteNative() {
+    return sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "agent",
+      contactId: contact.id,
+      kind: "pix",
+      pix: {
+        merchantName,
+        key: cfg.key!,
+        keyType: cfg.keyType,
+        bodyText: cfg.message ?? undefined,
+      },
       category: "service",
       bodyPreview,
     });
@@ -1818,27 +1877,25 @@ export async function sendPixKeyMessage(opts: {
 
   let r: Awaited<ReturnType<typeof sendOutbound>>;
 
-  if (pixMode === "interactive" && provider !== "evolution") {
-    r = await sendPixInteractiveCard();
+  if (provider === "evolution") {
+    r = await sendPixOffsiteNative();
+  } else if (pixMode === "template") {
+    r = await sendPixCopyCodeTemplate();
+  } else if (pixMode === "text") {
+    r = await sendPixTextCard();
   } else {
-    r = await sendOutbound({
-      to: contact.remoteJid || contact.phone,
-      source: "agent",
-      contactId: contact.id,
-      kind: "pix",
-      pix: {
-        merchantName,
-        key: cfg.key,
-        keyType: cfg.keyType,
-        bodyText: cfg.message ?? undefined,
-      },
-      category: "service",
-      bodyPreview,
-    });
-
-    if (!r.ok && pixMode !== "native" && provider !== "evolution") {
-      console.warn("[pix] nativo falhou, fallback interactive:", r.error);
-      r = await sendPixInteractiveCard();
+    r = await sendPixOffsiteNative();
+    if (!r.ok) {
+      const doc =
+        "https://developers.facebook.com/documentation/business-messaging/whatsapp/payments/payments-br/offsite-pix";
+      if (pixMode === "native") {
+        throw new Error(
+          `Pix offsite Meta recusado: ${r.error}. Confirme Payments API Brasil na WABA. Docs: ${doc}`
+        );
+      }
+      console.warn("[pix] offsite falhou, fallback:", r.error);
+      if (pixTemplateName) r = await sendPixCopyCodeTemplate();
+      else r = await sendPixTextCard();
     }
   }
 

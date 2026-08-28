@@ -97,8 +97,15 @@ const schema = z.object({
   PIX_KEY_TYPE: z.enum(["CPF", "CNPJ", "EMAIL", "PHONE", "EVP"]).default("CNPJ"),
   PIX_MERCHANT_NAME: z.string().default("Calangus Moda Jovem"),
   PIX_MESSAGE: z.string().optional(),
-  /** native = order_details Meta | interactive = botões Opção 1 | auto = native → interactive */
-  PIX_SEND_MODE: z.enum(["auto", "native", "interactive"]).default("interactive"),
+  /** Template aprovado na Meta com botão COPY_CODE (copiar chave). Ex.: chave_pix */
+  PIX_TEMPLATE_NAME: z.string().optional(),
+  PIX_TEMPLATE_LANG: z.string().default("pt_BR"),
+  /** Quantidade de variáveis {{1}}… no corpo do template (0 = corpo fixo). */
+  PIX_TEMPLATE_BODY_VARS: z.coerce.number().min(0).max(3).default(0),
+  /** Valor em centavos no order_details (ex.: 100 = R$ 1,00). Só offsite Pix Meta. */
+  PIX_TOTAL_AMOUNT_CENTS: z.coerce.number().min(1).default(100),
+  /** auto = offsite Pix → template → texto | native = order_details Meta | template | text */
+  PIX_SEND_MODE: z.enum(["auto", "native", "template", "text"]).default("native"),
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().default("mailto:contato@calangusmodajovem.com"),
