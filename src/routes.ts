@@ -2,8 +2,8 @@ import { Router } from "express";
 import multer from "multer";
 import { prisma } from "./db.js";
 import { adminRequired, authRequired } from "./services/auth.js";
-import { dispatchPending, resetDispatchStatus } from "./services/boletos.js";
-import { todayYmd } from "./services/csv.js";
+import { dispatchPending, dispatchPendingForVencimentos, resetDispatchStatus } from "./services/boletos.js";
+import { todayYmd, vencimentosParaDisparoHoje } from "./services/csv.js";
 import {
   getGestorAutomation,
   resetGestorAutomationRun,
@@ -97,17 +97,18 @@ router.get("/jobs/:id", ...adminOnly, async (req, res) => {
 router.get("/boletos", ...adminOnly, async (req, res) => {
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const hoje = req.query.hoje === "1" || req.query.hoje === "true";
-  const vencimento =
-    typeof req.query.vencimento === "string"
-      ? req.query.vencimento
-      : hoje
-        ? todayYmd()
-        : undefined;
+  const vencimentoQuery =
+    typeof req.query.vencimento === "string" ? req.query.vencimento : undefined;
+  const vencimentos = vencimentoQuery
+    ? [vencimentoQuery]
+    : hoje
+      ? vencimentosParaDisparoHoje()
+      : undefined;
 
   const boletos = await prisma.boleto.findMany({
     where: {
       ...(status ? { status: status as "pending" | "sent" | "failed" | "skipped" } : {}),
-      ...(vencimento ? { vencimento } : {}),
+      ...(vencimentos?.length ? { vencimento: { in: vencimentos } } : {}),
     },
     orderBy: [{ vencimento: "asc" }, { clienteNome: "asc" }],
   });
@@ -116,15 +117,15 @@ router.get("/boletos", ...adminOnly, async (req, res) => {
 
 router.get("/boletos/stats", ...adminOnly, async (req, res) => {
   const hoje = req.query.hoje !== "false" && req.query.hoje !== "0";
-  const vencimento = hoje ? todayYmd() : undefined;
+  const vencimentos = hoje ? vencimentosParaDisparoHoje() : undefined;
   const grouped = await prisma.boleto.groupBy({
     by: ["status"],
-    where: vencimento ? { vencimento } : undefined,
+    where: vencimentos?.length ? { vencimento: { in: vencimentos } } : undefined,
     _count: { _all: true },
     _sum: { valorVencimento: true },
   });
   res.json({
-    vencimento: vencimento ?? null,
+    vencimento: vencimentos?.join(", ") ?? null,
     byStatus: Object.fromEntries(
       grouped.map((g) => [
         g.status,
@@ -137,14 +138,21 @@ router.get("/boletos/stats", ...adminOnly, async (req, res) => {
 router.post("/dispatch", ...adminOnly, async (req, res) => {
   try {
     const hoje = req.body?.hoje !== false;
-    const vencimento =
-      typeof req.body?.vencimento === "string"
-        ? req.body.vencimento
-        : hoje
-          ? todayYmd()
-          : undefined;
-    const result = await dispatchPending(vencimento);
-    res.json({ vencimento: vencimento ?? null, ...result });
+    const vencimentoExplicit =
+      typeof req.body?.vencimento === "string" ? req.body.vencimento.trim() : "";
+    if (vencimentoExplicit) {
+      const result = await dispatchPending(vencimentoExplicit);
+      res.json({ vencimento: vencimentoExplicit, ...result });
+      return;
+    }
+    if (hoje) {
+      const vencimentos = vencimentosParaDisparoHoje();
+      const result = await dispatchPendingForVencimentos(vencimentos);
+      res.json({ vencimento: vencimentos.join(", "), ...result });
+      return;
+    }
+    const result = await dispatchPending();
+    res.json({ vencimento: null, ...result });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

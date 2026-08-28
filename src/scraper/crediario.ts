@@ -5,10 +5,14 @@ import { chromium, type Browser, type Page } from "playwright";
 import { env } from "../config.js";
 import {
   type CsvBoletoRow,
+  type ExtratoApiFilter,
+  buildExtratoApiFilter,
+  extratoFilterLabel,
   normalizePhone,
   parseMoney,
   toYmd,
 } from "../services/csv.js";
+import { nowInSaoPaulo } from "../services/whatsapp/schedule.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
@@ -24,21 +28,9 @@ export async function abortActiveBrowser() {
   if (browser) await browser.close().catch(() => {});
 }
 
-/** Filtro "Hoje" = diasVencimento: 0 (capturado do Network do Gestão). */
-const FILTRO_HOJE = {
-  arLojas: null,
-  diasVencimento: 0,
-  dataVencimentoi: null,
-  dataVencimentof: null,
-  arRiscosSelecionados: [] as string[],
-  arPlanosSemEntradaSelecionados: [] as string[],
-  arPlanosEntradaSelecionados: [] as string[],
-  arSituacaoParcelaSelecionados: [] as string[],
-  cliente: null,
-  contrato: null,
-};
-
 export interface ScrapeApiResult {
+  /** Modo do filtro usado (Hoje ou Informar período). */
+  filterLabel: string;
   rows: CsvBoletoRow[];
   sumario: unknown;
   rawPath: string;
@@ -51,7 +43,8 @@ export interface ScrapeApiResult {
 }
 
 /**
- * Login (Playwright) → page.request (cookies da sessão) → findAll (diasVencimento=0).
+ * Login (Playwright) → page.request (cookies da sessão) → findAll.
+ * Ter–sex: filtro "Hoje" (diasVencimento=0). Segunda: "Informar período" (sáb–seg).
  */
 export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
   if (!env.CREDIARIO_USER || !env.CREDIARIO_PASSWORD) {
@@ -70,18 +63,18 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
   });
   const page = await context.newPage();
 
+  const filter = buildExtratoApiFilter(nowInSaoPaulo());
+  const filterLabel = extratoFilterLabel(nowInSaoPaulo());
+
   try {
     await login(page);
     await page.screenshot({ path: path.join(screenshotsDir, "01-login.png"), fullPage: true });
 
-    await page.goto(env.CREDIARIO_REPORT_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 60_000,
-    });
-    await page.waitForTimeout(2000);
+    await openReportPage(page);
+    await assertGestaoSession(page, filter);
 
-    const sumario = await callGestaoApi(page, "findAllSumario", FILTRO_HOJE);
-    const { items, findAllSample, findAllTopKeys } = await fetchAllParcelas(page);
+    const sumario = await callGestaoApi(page, "findAllSumario", filter);
+    const { items, findAllSample, findAllTopKeys } = await fetchAllParcelas(page, filter);
 
     const rows = flattenAndMap(items);
 
@@ -90,6 +83,8 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
       rawPath,
       JSON.stringify(
         {
+          filter: filterLabel,
+          filterParams: filter,
           sumario,
           findAllTopKeys,
           findAllSample,
@@ -113,6 +108,7 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
       itemsRawCount: items.length,
       findAllTopKeys,
       findAllSample,
+      filterLabel,
     };
   } catch (err) {
     await page.screenshot({ path: path.join(screenshotsDir, "erro.png"), fullPage: true }).catch(() => {});
@@ -134,37 +130,96 @@ async function login(page: Page): Promise<void> {
   await user.fill(env.CREDIARIO_USER!);
   await pass.fill(env.CREDIARIO_PASSWORD!);
   await page
-    .locator('button[type="submit"], button:has-text("Acessar"), button:has-text("Entrar")')
+    .locator(
+      'button[type="submit"], button:has-text("Acessar minha conta"), button:has-text("Acessar"), button:has-text("Entrar")'
+    )
     .first()
     .click();
 
+  await page.waitForTimeout(2000);
+  await skipTwoFactorPrompt(page);
+
   await Promise.race([
-    page.waitForURL((url) => !url.href.includes("login"), { timeout: 45_000 }),
-    page.waitForTimeout(5000),
+    page.waitForURL((url) => url.hostname.includes("gestao.meucrediario.com.br"), {
+      timeout: 45_000,
+    }),
+    page.waitForURL((url) => !url.href.includes("/login"), { timeout: 45_000 }),
+    page.waitForTimeout(8000),
   ]);
+
+  await skipTwoFactorPrompt(page);
+  await openReportPage(page);
+  await skipTwoFactorPrompt(page);
 }
 
-async function fetchAllParcelas(page: Page): Promise<{
+/** Tela "Ative a verificação em duas etapas" — pula e segue sem 2FA. */
+async function skipTwoFactorPrompt(page: Page): Promise<void> {
+  const skipBtn = page
+    .locator(
+      [
+        'button:has-text("Acessar minha conta sem ativar")',
+        'a:has-text("Acessar minha conta sem ativar")',
+        'button:has-text("Entrar sem ativar")',
+        'a:has-text("Entrar sem ativar")',
+        '[role="button"]:has-text("sem ativar")',
+      ].join(", ")
+    )
+    .first();
+
+  const on2faScreen =
+    (await page.getByText("verificação em duas etapas", { exact: false }).count()) > 0 ||
+    (await page.getByText("Proteja sua conta", { exact: false }).count()) > 0;
+
+  if (!on2faScreen && !(await skipBtn.isVisible().catch(() => false))) return;
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+  await page.waitForTimeout(400);
+
+  if (await skipBtn.isVisible().catch(() => false)) {
+    await skipBtn.scrollIntoViewIfNeeded().catch(() => {});
+    await skipBtn.click({ timeout: 10_000 });
+    await page.waitForTimeout(2500);
+  }
+}
+
+async function openReportPage(page: Page): Promise<void> {
+  await page.goto(env.CREDIARIO_REPORT_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60_000,
+  });
+  await page.waitForTimeout(2000);
+}
+
+async function assertGestaoSession(page: Page, filter: ExtratoApiFilter): Promise<void> {
+  await callGestaoApiOnce(page, "findAllSumario", filter);
+}
+
+async function fetchAllParcelas(
+  page: Page,
+  filter: ExtratoApiFilter
+): Promise<{
   items: Record<string, unknown>[];
   findAllSample: unknown;
   findAllTopKeys: string[];
 }> {
-  const limit = 100;
-  let pageNum = 0;
-  let offset = 0;
   const all: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
   let findAllSample: unknown = null;
   let findAllTopKeys: string[] = [];
 
+  const limit = 100;
+  let pageNum = 0;
+  let offset = 0;
+
   for (;;) {
     const payload = {
-      ...FILTRO_HOJE,
+      ...filter,
       page: pageNum,
       limit,
       offset,
     };
     const data = await callGestaoApi(page, "findAll", payload);
-    if (pageNum === 0) {
+    if (pageNum === 0 && findAllSample == null) {
       findAllSample = data;
       findAllTopKeys =
         data && typeof data === "object" && !Array.isArray(data)
@@ -175,7 +230,12 @@ async function fetchAllParcelas(page: Page): Promise<{
     }
 
     const batch = extractList(data);
-    all.push(...batch);
+    for (const item of batch) {
+      const key = parcelaDedupeKey(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      all.push(item);
+    }
 
     if (batch.length < limit) break;
     pageNum += 1;
@@ -186,8 +246,39 @@ async function fetchAllParcelas(page: Page): Promise<{
   return { items: all, findAllSample, findAllTopKeys };
 }
 
+function parcelaDedupeKey(item: Record<string, unknown>): string {
+  const row = mapApiItem(item);
+  if (row) return row.externalId;
+  return JSON.stringify(item).slice(0, 240);
+}
+
 /** Chamada autenticada com cookies da sessão Playwright. */
 async function callGestaoApi(
+  page: Page,
+  functionName: "findAll" | "findAllSumario",
+  params: Record<string, unknown>,
+  retried = false
+): Promise<unknown> {
+  try {
+    return await callGestaoApiOnce(page, functionName, params);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const sessionLost =
+      msg.includes("HTML") ||
+      msg.includes("sessão") ||
+      msg.includes("Login Meu Crediário") ||
+      msg.includes("Unexpected token");
+    if (!retried && sessionLost) {
+      console.warn("[crediario] sessão inválida — relogin e retry", functionName);
+      await login(page);
+      await assertGestaoSession(page, params as ExtratoApiFilter);
+      return callGestaoApiOnce(page, functionName, params);
+    }
+    throw err;
+  }
+}
+
+async function callGestaoApiOnce(
   page: Page,
   functionName: "findAll" | "findAllSumario",
   params: Record<string, unknown>
@@ -204,12 +295,30 @@ async function callGestaoApi(
     },
   });
 
+  const text = await res.text().catch(() => "");
+  const trimmed = text.trim();
+
   if (!res.ok()) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`API ${functionName} HTTP ${res.status()}: ${body.slice(0, 400)}`);
+    throw new Error(`API ${functionName} HTTP ${res.status()}: ${trimmed.slice(0, 400)}`);
   }
 
-  return res.json();
+  if (!trimmed) {
+    throw new Error(`API ${functionName} resposta vazia`);
+  }
+
+  if (trimmed.startsWith("<") || trimmed.toLowerCase().startsWith("<!doctype")) {
+    throw new Error(
+      "Login Meu Crediário falhou ou sessão expirada (API retornou HTML). Confira CREDIARIO_USER e CREDIARIO_PASSWORD no Railway."
+    );
+  }
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new Error(
+      `API ${functionName} resposta inválida (esperado JSON): ${trimmed.slice(0, 200)}`
+    );
+  }
 }
 
 /**

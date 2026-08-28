@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
-import { todayYmd } from "./csv.js";
-import { cancelActiveDispatch, dispatchPending, isDispatchRunning } from "./boletos.js";
+import { todayYmd, vencimentosParaDisparoHoje } from "./csv.js";
+import { cancelActiveDispatch, dispatchPending, dispatchPendingForVencimentos, isDispatchRunning } from "./boletos.js";
 import { cancelActiveScrapes, isScrapeRunning, runScrapeJobAndWait } from "./jobs.js";
 import { minutesOfDay, nowInSaoPaulo } from "./whatsapp/schedule.js";
 
@@ -158,9 +158,12 @@ async function executeAutomationOnce(token: number) {
 
   let msg = `Scrape OK: ${job.rowsUpserted} boleto(s)`;
   if (cfg.dispatchAfterScrape) {
-    const d = await dispatchPending(ymd);
+    const vencimentos = vencimentosParaDisparoHoje(nowInSaoPaulo());
+    const d = await dispatchPendingForVencimentos(vencimentos);
     if (!alive()) return { ok: false as const, message: "cancelado" };
-    msg += ` · Disparo: ${d.sent} enviados, ${d.failed} falhas, ${d.skipped} ignorados`;
+    const vencLabel =
+      vencimentos.length > 1 ? vencimentos.map((v) => v.slice(5)).join(", ") : vencimentos[0] ?? ymd;
+    msg += ` · Disparo (${vencLabel}): ${d.sent} enviados, ${d.failed} falhas, ${d.skipped} ignorados`;
   }
 
   if (!alive()) return { ok: false as const, message: "cancelado" };

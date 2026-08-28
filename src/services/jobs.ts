@@ -73,7 +73,7 @@ async function executeJob(jobId: string, token: number): Promise<void> {
   });
 
   try {
-    const { rows, rawPath, sumario, itemsRawCount, findAllTopKeys } =
+    const { rows, rawPath, sumario, itemsRawCount, findAllTopKeys, filterLabel } =
       await scrapeExtratoHojeApi();
     if (token !== scrapeGeneration) {
       await markCancelled(jobId);
@@ -121,7 +121,7 @@ async function executeJob(jobId: string, token: number): Promise<void> {
         rowsFound: rows.length,
         rowsUpserted: upserted,
         csvPath: rawPath,
-        message: `API findAll (Hoje): ${rows.length} parcela(s) (brutos: ${itemsRawCount})${sumarioTxt}`,
+        message: `API findAll (${filterLabel}): ${rows.length} parcela(s) (brutos: ${itemsRawCount})${sumarioTxt}`,
       },
     });
   } catch (err) {

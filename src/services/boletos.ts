@@ -318,6 +318,24 @@ export async function dispatchPending(vencimento?: string) {
   }
 }
 
+/** Dispara pending para várias datas de vencimento (ex.: seg → sáb, dom, hoje). */
+export async function dispatchPendingForVencimentos(vencimentos: string[]) {
+  const dates = [...new Set(vencimentos.map((v) => v.trim()).filter(Boolean))];
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+  let total = 0;
+  for (const vencimento of dates) {
+    console.log(`[dispatch] vencimento ${vencimento}`);
+    const r = await dispatchPending(vencimento);
+    sent += r.sent;
+    failed += r.failed;
+    skipped += r.skipped;
+    total += r.total;
+  }
+  return { total, sent, failed, skipped, vencimentos: dates };
+}
+
 /** Volta sent/failed/skipped → pending (para retestar disparo). */
 export async function resetDispatchStatus(vencimento?: string) {
   const where = {

@@ -127,12 +127,104 @@ export function toYmd(raw: string): string {
   return s;
 }
 
-export function todayYmd(): string {
-  const tz = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+export function todayYmd(now?: Date): string {
+  const tz =
+    now ?? new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
   const y = tz.getFullYear();
   const m = String(tz.getMonth() + 1).padStart(2, "0");
   const d = String(tz.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+export function addDaysYmd(ymd: string, days: number): string {
+  const [y, mo, d] = ymd.split("-").map(Number);
+  const dt = new Date(y, mo - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
+/** Filtro da API Gestão (espelha a tela Extrato de parcelas em aberto). */
+export type ExtratoApiFilter = {
+  arLojas: null;
+  diasVencimento: number | null;
+  dataVencimentoi: string | null;
+  dataVencimentof: string | null;
+  arRiscosSelecionados: string[];
+  arPlanosSemEntradaSelecionados: string[];
+  arPlanosEntradaSelecionados: string[];
+  arSituacaoParcelaSelecionados: string[];
+  cliente: null;
+  contrato: null;
+};
+
+function saoPauloNow(now?: Date): Date {
+  return now ?? new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+}
+
+/** DD/MM/YYYY — formato usado na UI "Informar período". */
+export function toBrDate(ymd: string): string {
+  const [y, m, d] = ymd.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+/** Segunda = período (sáb–seg); terça a sexta = Hoje. */
+export function extratoFilterMode(now?: Date): "hoje" | "periodo" {
+  return saoPauloNow(now).getDay() === 1 ? "periodo" : "hoje";
+}
+
+export function buildExtratoApiFilter(now?: Date): ExtratoApiFilter {
+  const sp = saoPauloNow(now);
+  const hoje = todayYmd(sp);
+  const base: ExtratoApiFilter = {
+    arLojas: null,
+    arRiscosSelecionados: [],
+    arPlanosSemEntradaSelecionados: [],
+    arPlanosEntradaSelecionados: [],
+    arSituacaoParcelaSelecionados: [],
+    cliente: null,
+    contrato: null,
+    diasVencimento: null,
+    dataVencimentoi: null,
+    dataVencimentof: null,
+  };
+
+  if (sp.getDay() === 1) {
+    return {
+      ...base,
+      diasVencimento: null,
+      dataVencimentoi: toBrDate(addDaysYmd(hoje, -2)),
+      dataVencimentof: toBrDate(hoje),
+    };
+  }
+
+  return {
+    ...base,
+    diasVencimento: 0,
+    dataVencimentoi: null,
+    dataVencimentof: null,
+  };
+}
+
+export function extratoFilterLabel(now?: Date): string {
+  if (extratoFilterMode(now) === "periodo") {
+    const v = vencimentosParaDisparoHoje(now);
+    return `Informar período (${toBrDate(v[0]!)} – ${toBrDate(v[v.length - 1]!)})`;
+  }
+  return "Hoje";
+}
+
+/**
+ * Vencimentos a disparar na automação/manual “hoje”.
+ * Segunda-feira: sábado + domingo + hoje (fim de semana não roda automático).
+ */
+export function vencimentosParaDisparoHoje(now?: Date): string[] {
+  const sp =
+    now ?? new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+  const hoje = todayYmd(sp);
+  if (sp.getDay() === 1) {
+    return [addDaysYmd(hoje, -2), addDaysYmd(hoje, -1), hoje];
+  }
+  return [hoje];
 }
 
 export function normalizePhone(phone: string): string {
