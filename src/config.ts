@@ -92,6 +92,11 @@ const schema = z.object({
   CLIENT_IDLE_CLOSE_MINUTES: z.coerce.number().default(5),
   /** Horas sem mensagem (qualquer lado) para fechar a conversa sem enviar texto. */
   IDLE_CLOSE_HOURS: z.coerce.number().default(24),
+  /** Chave Pix padrão (CNPJ) — sobrescrito pelo cadastro em Conectar WhatsApp. */
+  PIX_KEY: z.string().optional(),
+  PIX_KEY_TYPE: z.enum(["CPF", "CNPJ", "EMAIL", "PHONE", "EVP"]).default("CNPJ"),
+  PIX_MERCHANT_NAME: z.string().default("Calangus Moda Jovem"),
+  PIX_MESSAGE: z.string().optional(),
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().default("mailto:contato@calangusmodajovem.com"),

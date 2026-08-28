@@ -436,6 +436,61 @@ export class MetaClient {
     });
   }
 
+  /** Cartão Pix com botão Copiar chave (Payments BR / pix_static_code). */
+  buildPixInteractivePayload(opts: {
+    merchantName: string;
+    key: string;
+    keyType: "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "EVP";
+    bodyText?: string;
+    referenceId?: string;
+  }) {
+    const referenceId = opts.referenceId ?? `pix-${Date.now()}`;
+    const normalizedKey =
+      opts.key.replace(/\D/g, "").length === opts.key.length &&
+      opts.keyType !== "EMAIL" &&
+      opts.keyType !== "EVP"
+        ? opts.key.replace(/\D/g, "")
+        : opts.key;
+    return {
+      type: "order_details",
+      body: { text: opts.bodyText?.trim() || "Segue nossa chave Pix 👇" },
+      action: {
+        name: "review_and_pay",
+        parameters: {
+          reference_id: referenceId,
+          type: "digital-goods",
+          payment_type: "br",
+          currency: "BRL",
+          total_amount: { value: 0, offset: 100 },
+          payment_settings: [
+            {
+              type: "pix_static_code",
+              pix_static_code: {
+                merchant_name: opts.merchantName,
+                key: normalizedKey,
+                key_type: opts.keyType,
+              },
+            },
+          ],
+        },
+      },
+    };
+  }
+
+  async sendPixStaticKey(opts: {
+    to: string;
+    merchantName: string;
+    key: string;
+    keyType: "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "EVP";
+    bodyText?: string;
+    referenceId?: string;
+  }) {
+    return this.sendInteractive(
+      MetaClient.toNumber(opts.to),
+      this.buildPixInteractivePayload(opts)
+    );
+  }
+
   /** Marca mensagem (e anteriores da conversa) como lida no WhatsApp. */
   async markAsRead(messageId: string) {
     return this.req({

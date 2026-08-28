@@ -348,6 +348,11 @@ model WhatsAppConnection {
   storeLocationName    String?
   storeLocationAddress String?
   storeLocationMessage String?
+  /** Chave Pix fixa para envio no atendimento. */
+  pixKey               String?
+  pixKeyType           String?   @default("CNPJ")
+  pixMerchantName      String?
+  pixMessage           String?
   connectedAt          DateTime?
   updatedAt            DateTime  @updatedAt
 }

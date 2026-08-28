@@ -8,7 +8,7 @@ import { meta, MetaClient } from "./meta.js";
 
 export type WhatsAppProvider = "meta" | "evolution" | "gupshup";
 export type SendSource = "boleto" | "bot" | "agent" | "system";
-export type SendKind = "text" | "template" | "media" | "audio" | "interactive" | "location";
+export type SendKind = "text" | "template" | "media" | "audio" | "interactive" | "location" | "pix";
 export type SendCategory =
   | "utility"
   | "service"
@@ -75,6 +75,12 @@ export async function sendOutbound(opts: {
     name?: string;
     address?: string;
   };
+  pix?: {
+    merchantName: string;
+    key: string;
+    keyType: "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "EVP";
+    bodyText?: string;
+  };
   contactId?: string | null;
   boletoId?: string | null;
   category?: SendCategory;
@@ -99,7 +105,9 @@ export async function sendOutbound(opts: {
         ? "interactive"
         : opts.location
           ? "location"
-          : opts.media?.mediatype === "audio"
+          : opts.pix
+            ? "pix"
+            : opts.media?.mediatype === "audio"
             ? "audio"
             : opts.media
               ? "media"
@@ -241,6 +249,14 @@ export async function sendOutbound(opts: {
           longitude: opts.location.longitude,
           name: opts.location.name,
           address: opts.location.address,
+        });
+      } else if (opts.pix) {
+        r = await meta.sendPixStaticKey({
+          to: phone,
+          merchantName: opts.pix.merchantName,
+          key: opts.pix.key,
+          keyType: opts.pix.keyType,
+          bodyText: opts.pix.bodyText,
         });
       } else {
         r = await meta.sendText(phone, opts.text ?? "", opts.quoted?.externalId);
@@ -387,6 +403,16 @@ export async function sendOutbound(opts: {
           name: opts.location.name,
           address: opts.location.address,
         });
+      } else if (opts.pix) {
+        r = await gupshup.sendInteractive(
+          phone,
+          meta.buildPixInteractivePayload({
+            merchantName: opts.pix.merchantName,
+            key: opts.pix.key,
+            keyType: opts.pix.keyType,
+            bodyText: opts.pix.bodyText,
+          })
+        );
       } else {
         r = await gupshup.sendText(phone, opts.text ?? "");
       }
@@ -423,7 +449,22 @@ export async function sendOutbound(opts: {
     }
 
     let r;
-    if (opts.location) {
+    if (opts.pix) {
+      const keyTypeMap = {
+        CPF: "cpf",
+        CNPJ: "cnpj",
+        EMAIL: "email",
+        PHONE: "phone",
+        EVP: "random",
+      } as const;
+      r = await evolution.sendPixButton({
+        phone: opts.to,
+        merchantName: opts.pix.merchantName,
+        key: opts.pix.key,
+        keyType: keyTypeMap[opts.pix.keyType],
+        description: opts.pix.bodyText,
+      });
+    } else if (opts.location) {
       r = await evolution.sendLocation({
         phone: opts.to,
         latitude: opts.location.latitude,

@@ -383,6 +383,42 @@ export class EvolutionClient {
     return r;
   }
 
+  /** Botão Pix nativo (Copiar chave Pix) — Evolution v2. */
+  async sendPixButton(opts: {
+    phone: string;
+    merchantName: string;
+    key: string;
+    keyType: "cpf" | "cnpj" | "email" | "phone" | "random";
+    title?: string;
+    description?: string;
+  }) {
+    const instance = await this.resolveInstance();
+    if (!instance) {
+      console.error("[evolution] sendPixButton: nenhuma instância em Conectar WhatsApp");
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
+    }
+    const number = this.sendNumber(opts.phone);
+    const r = await this.req("POST", `/message/sendButtons/${encodeURIComponent(instance)}`, {
+      number,
+      title: opts.title || opts.merchantName,
+      description: opts.description || "",
+      footer: "",
+      buttons: [
+        {
+          type: "pix",
+          currency: "BRL",
+          name: opts.merchantName,
+          keyType: opts.keyType,
+          key: opts.key,
+        },
+      ],
+    });
+    if (!r.ok) {
+      console.error("[evolution] sendPixButton", number, r.status, r.text.slice(0, 300));
+    }
+    return r;
+  }
+
   async deleteOwnMessage(remoteJid: string, messageId: string) {
     const instance = await this.resolveInstance();
     if (!instance) {

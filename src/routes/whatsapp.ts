@@ -36,6 +36,7 @@ import {
   assignContact,
   contactFlags,
   getStoreLocationConfig,
+  getPixConfig,
   getWhatsAppReports,
   handleEvolutionWebhook,
   listContacts,
@@ -48,9 +49,11 @@ import {
   sendImageMessage,
   sendImageMessagesConcurrent,
   sendLocationMessage,
+  sendPixKeyMessage,
   sendProductOutreach,
   sendTextMessage,
   updateStoreLocationConfig,
+  updatePixConfig,
   warnInactivity,
 } from "../services/whatsapp/service.js";
 import { serializeContact } from "../services/whatsapp/contacts.js";
@@ -1372,6 +1375,55 @@ whatsappRouter.post("/messages/location", async (req, res) => {
       name: req.body?.name ? String(req.body.name) : null,
       address: req.body?.address ? String(req.body.address) : null,
       preamble: req.body?.preamble ? String(req.body.preamble) : null,
+      userId: req.user!.id,
+      role: req.user!.role as "admin" | "seller",
+    });
+    res.json(msg);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/pix-key", async (_req, res) => {
+  try {
+    res.json(await getPixConfig());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.put("/pix-key", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    const row = await updatePixConfig({
+      key: req.body?.key != null ? String(req.body.key) : undefined,
+      keyType: req.body?.keyType != null ? String(req.body.keyType) : undefined,
+      merchantName: req.body?.merchantName != null ? String(req.body.merchantName) : undefined,
+      message: req.body?.message != null ? String(req.body.message) : undefined,
+    });
+    res.json({
+      key: row.pixKey,
+      keyType: row.pixKeyType,
+      merchantName: row.pixMerchantName,
+      message: row.pixMessage,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/messages/pix", async (req, res) => {
+  try {
+    const contactId = String(req.body?.contactId ?? "").trim();
+    if (!contactId) {
+      res.status(400).json({ error: "contactId obrigatório" });
+      return;
+    }
+    const msg = await sendPixKeyMessage({
+      contactId,
       userId: req.user!.id,
       role: req.user!.role as "admin" | "seller",
     });

@@ -1677,6 +1677,186 @@ export async function sendLocationMessage(opts: {
   return msg;
 }
 
+export type PixKeyType = "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "EVP";
+
+export type PixConfig = {
+  key: string | null;
+  keyType: PixKeyType;
+  merchantName: string | null;
+  message: string | null;
+};
+
+function normalizePixKeyType(v: string | null | undefined): PixKeyType {
+  const u = (v || "CNPJ").toUpperCase();
+  if (u === "CPF" || u === "CNPJ" || u === "EMAIL" || u === "PHONE" || u === "EVP") return u;
+  return "CNPJ";
+}
+
+export async function getPixConfig(): Promise<PixConfig> {
+  const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+  return {
+    key: row?.pixKey?.trim() || env.PIX_KEY?.trim() || null,
+    keyType: normalizePixKeyType(row?.pixKeyType ?? env.PIX_KEY_TYPE),
+    merchantName: row?.pixMerchantName?.trim() || env.PIX_MERCHANT_NAME?.trim() || null,
+    message: row?.pixMessage?.trim() || env.PIX_MESSAGE?.trim() || null,
+  };
+}
+
+export async function updatePixConfig(data: {
+  key?: string | null;
+  keyType?: string | null;
+  merchantName?: string | null;
+  message?: string | null;
+}) {
+  const patch: Record<string, unknown> = {};
+  if (data.key !== undefined) patch.pixKey = data.key?.replace(/\s/g, "") || null;
+  if (data.keyType !== undefined) patch.pixKeyType = normalizePixKeyType(data.keyType);
+  if (data.merchantName !== undefined) patch.pixMerchantName = data.merchantName?.trim() || null;
+  if (data.message !== undefined) patch.pixMessage = data.message?.trim() || null;
+  return prisma.whatsAppConnection.upsert({
+    where: { id: "default" },
+    update: patch,
+    create: { id: "default", instanceName: "", status: "disconnected", ...patch },
+    select: {
+      pixKey: true,
+      pixKeyType: true,
+      pixMerchantName: true,
+      pixMessage: true,
+    },
+  });
+}
+
+function pixKeyTypeLabel(keyType: PixKeyType): string {
+  const map: Record<PixKeyType, string> = {
+    CPF: "CPF",
+    CNPJ: "CNPJ",
+    EMAIL: "E-mail",
+    PHONE: "Celular",
+    EVP: "Chave aleatória",
+  };
+  return map[keyType];
+}
+
+function formatPixKeyDisplay(key: string, keyType: PixKeyType): string {
+  const digits = key.replace(/\D/g, "");
+  if (keyType === "CNPJ" && digits.length === 14) {
+    return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}`;
+  }
+  if (keyType === "CPF" && digits.length === 11) {
+    return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+  }
+  if (keyType === "PHONE" && digits.length >= 10) {
+    const d = digits.length === 13 && digits.startsWith("55") ? digits.slice(2) : digits;
+    if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+    if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  }
+  return key;
+}
+
+function normalizePixKeyRaw(key: string, keyType: PixKeyType): string {
+  if (keyType === "EMAIL" || keyType === "EVP") return key.trim();
+  return key.replace(/\D/g, "");
+}
+
+function formatPixBody(merchantName: string, key: string, keyType: PixKeyType): string {
+  return `${merchantName}\n${pixKeyTypeLabel(keyType)}: ${formatPixKeyDisplay(key, keyType)}`;
+}
+
+export async function sendPixKeyMessage(opts: {
+  contactId: string;
+  userId: string;
+  role?: "admin" | "seller";
+}) {
+  const cfg = await getPixConfig();
+  if (!cfg.key) {
+    throw new Error("Chave Pix não configurada. Cadastre em Conectar WhatsApp.");
+  }
+
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: opts.contactId },
+  });
+  if (
+    (contact.status === "closed" || contact.status === "awaiting_rating") &&
+    !contact.webhookPaused
+  ) {
+    throw new Error("Conversa finalizada — somente leitura");
+  }
+
+  const role = opts.role ?? "seller";
+  if (!(role === "admin" || contact.assignedToId === opts.userId)) {
+    await assumeOnOpen(opts.contactId, opts.userId, role);
+  }
+  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado");
+
+  const merchantName = cfg.merchantName || "Pix";
+  const rawKey = normalizePixKeyRaw(cfg.key, cfg.keyType);
+  const bodyPreview = formatPixBody(merchantName, cfg.key, cfg.keyType);
+
+  let r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "agent",
+    contactId: contact.id,
+    kind: "pix",
+    pix: {
+      merchantName,
+      key: cfg.key,
+      keyType: cfg.keyType,
+      bodyText: cfg.message ?? undefined,
+    },
+    category: "service",
+    bodyPreview,
+  });
+
+  let msgType: "pix" | "text" = "pix";
+  let externalId = r.externalId;
+  let storedBody = bodyPreview;
+
+  if (!r.ok) {
+    console.warn("[pix] nativo falhou, fallback texto:", r.error);
+    const fallback = [
+      cfg.message?.trim(),
+      `💳 *${merchantName}*`,
+      `${pixKeyTypeLabel(cfg.keyType)}: ${formatPixKeyDisplay(cfg.key, cfg.keyType)}`,
+      "",
+      `_Chave: ${rawKey}_`,
+    ]
+      .filter((line) => line != null && line !== "")
+      .join("\n");
+    const text = await sellerPrefix(opts.userId, fallback);
+    r = await sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "agent",
+      contactId: contact.id,
+      kind: "text",
+      text,
+      category: "service",
+    });
+    if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
+    msgType = "text";
+    externalId = r.externalId;
+    storedBody = text;
+  }
+
+  const msg = await upsertOutboundMessage({
+    contactId: contact.id,
+    type: msgType,
+    body: storedBody,
+    mediaUrl: msgType === "pix" ? rawKey : null,
+    sentById: opts.userId,
+    externalId,
+  });
+
+  await touchContactAfterMessage(contact.id, "out", storedBody);
+  if (role !== "admin") {
+    await prisma.whatsAppContact.update({
+      where: { id: contact.id },
+      data: { status: "human", assignedToId: opts.userId },
+    });
+  }
+
+  return msg;
+}
+
 export async function handleRatingReply(contactId: string, body: string | null) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
