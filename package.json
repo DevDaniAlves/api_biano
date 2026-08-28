@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.3.1",
+    "@thiagoprazeres/pix-static-brcode": "^1.0.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "csv-parse": "^5.6.0",

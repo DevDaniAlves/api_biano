@@ -1,5 +1,11 @@
 import { env } from "../../config.js";
 import { prisma } from "../../db.js";
+import {
+  buildBrCodeRef,
+  generateStaticBrCode,
+  projectCity,
+  projectReceiverName,
+} from "@thiagoprazeres/pix-static-brcode";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 
@@ -436,21 +442,34 @@ export class MetaClient {
     });
   }
 
-  /** Cartão Pix com botão Copiar chave (Payments BR / pix_static_code). */
+  /** Cartão Pix com botão Copiar (Payments BR / pix_dynamic_code). */
   buildPixInteractivePayload(opts: {
     merchantName: string;
     key: string;
     keyType: "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "EVP";
     bodyText?: string;
     referenceId?: string;
+    merchantCity?: string;
   }) {
-    const referenceId = opts.referenceId ?? `pix-${Date.now()}`;
+    const referenceId = (opts.referenceId ?? `pix-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 60);
     const normalizedKey =
       opts.key.replace(/\D/g, "").length === opts.key.length &&
       opts.keyType !== "EMAIL" &&
       opts.keyType !== "EVP"
         ? opts.key.replace(/\D/g, "")
-        : opts.key;
+        : opts.key.trim();
+    const pixKeyForBrCode =
+      opts.keyType === "PHONE" && normalizedKey.length >= 10 && !normalizedKey.startsWith("+")
+        ? `+55${normalizedKey}`
+        : normalizedKey;
+    const receiverName = projectReceiverName(opts.merchantName);
+    const receiverCity = projectCity(opts.merchantCity?.trim() || "SAO PAULO");
+    const pixCode = generateStaticBrCode({
+      pixKey: pixKeyForBrCode,
+      receiverName,
+      receiverCity,
+      referenceLabel: buildBrCodeRef(referenceId),
+    });
     return {
       type: "order_details",
       body: { text: opts.bodyText?.trim() || "Segue nossa chave Pix 👇" },
@@ -461,18 +480,51 @@ export class MetaClient {
           type: "digital-goods",
           payment_type: "br",
           currency: "BRL",
-          total_amount: { value: 0, offset: 100 },
+          total_amount: { value: 100, offset: 100 },
           payment_settings: [
             {
-              type: "pix_static_code",
-              pix_static_code: {
-                merchant_name: opts.merchantName,
+              type: "pix_dynamic_code",
+              pix_dynamic_code: {
+                code: pixCode,
+                merchant_name: opts.merchantName.slice(0, 60),
                 key: normalizedKey,
                 key_type: opts.keyType,
               },
             },
           ],
         },
+      },
+    };
+  }
+
+  /** Opção 1: card interativo com chave Pix no corpo + botão de resposta (janela 24h). */
+  buildPixShareButtonPayload(opts: {
+    merchantName: string;
+    keyLabel: string;
+    rawKey: string;
+    preamble?: string;
+  }) {
+    const bodyLines = [
+      opts.preamble?.trim(),
+      opts.keyLabel,
+      "",
+      "Toque e segure a chave abaixo para copiar:",
+      `\`\`\`${opts.rawKey}\`\`\``,
+    ].filter((line) => line != null && line !== "");
+    const body = bodyLines.join("\n").slice(0, 1024);
+    const merchant = opts.merchantName.trim().slice(0, 60) || "Pix";
+    return {
+      type: "button",
+      header: { type: "text", text: merchant },
+      body: { text: body },
+      footer: { text: "Chave Pix" },
+      action: {
+        buttons: [
+          {
+            type: "reply",
+            reply: { id: "pix_confirmado", title: "Já efetuei pagamento" },
+          },
+        ],
       },
     };
   }

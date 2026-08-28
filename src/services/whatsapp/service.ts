@@ -1791,57 +1791,66 @@ export async function sendPixKeyMessage(opts: {
   const merchantName = cfg.merchantName || "Pix";
   const rawKey = normalizePixKeyRaw(cfg.key, cfg.keyType);
   const bodyPreview = formatPixBody(merchantName, cfg.key, cfg.keyType);
+  const keyLabel = `${pixKeyTypeLabel(cfg.keyType)}: ${formatPixKeyDisplay(cfg.key, cfg.keyType)}`;
+  const provider = await activeProvider();
+  const pixMode = env.PIX_SEND_MODE;
+  const storedBody = [cfg.message?.trim(), bodyPreview, "", `Chave: ${rawKey}`]
+    .filter((line) => line != null && line !== "")
+    .join("\n");
 
-  let r = await sendOutbound({
-    to: contact.remoteJid || contact.phone,
-    source: "agent",
-    contactId: contact.id,
-    kind: "pix",
-    pix: {
+  async function sendPixInteractiveCard() {
+    const interactive = meta.buildPixShareButtonPayload({
       merchantName,
-      key: cfg.key,
-      keyType: cfg.keyType,
-      bodyText: cfg.message ?? undefined,
-    },
-    category: "service",
-    bodyPreview,
-  });
+      keyLabel,
+      rawKey,
+      preamble: cfg.message ?? undefined,
+    });
+    return sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "agent",
+      contactId: contact.id,
+      kind: "interactive",
+      interactive,
+      category: "service",
+      bodyPreview,
+    });
+  }
 
-  let msgType: "pix" | "text" = "pix";
-  let externalId = r.externalId;
-  let storedBody = bodyPreview;
+  let r: Awaited<ReturnType<typeof sendOutbound>>;
 
-  if (!r.ok) {
-    console.warn("[pix] nativo falhou, fallback texto:", r.error);
-    const fallback = [
-      cfg.message?.trim(),
-      `💳 *${merchantName}*`,
-      `${pixKeyTypeLabel(cfg.keyType)}: ${formatPixKeyDisplay(cfg.key, cfg.keyType)}`,
-      "",
-      `_Chave: ${rawKey}_`,
-    ]
-      .filter((line) => line != null && line !== "")
-      .join("\n");
-    const text = await sellerPrefix(opts.userId, fallback);
+  if (pixMode === "interactive" && provider !== "evolution") {
+    r = await sendPixInteractiveCard();
+  } else {
     r = await sendOutbound({
       to: contact.remoteJid || contact.phone,
       source: "agent",
       contactId: contact.id,
-      kind: "text",
-      text,
+      kind: "pix",
+      pix: {
+        merchantName,
+        key: cfg.key,
+        keyType: cfg.keyType,
+        bodyText: cfg.message ?? undefined,
+      },
       category: "service",
+      bodyPreview,
     });
-    if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
-    msgType = "text";
-    externalId = r.externalId;
-    storedBody = text;
+
+    if (!r.ok && pixMode !== "native" && provider !== "evolution") {
+      console.warn("[pix] nativo falhou, fallback interactive:", r.error);
+      r = await sendPixInteractiveCard();
+    }
   }
+
+  if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
+
+  const externalId = r.externalId;
 
   const msg = await upsertOutboundMessage({
     contactId: contact.id,
-    type: msgType,
+    type: "pix",
     body: storedBody,
-    mediaUrl: msgType === "pix" ? rawKey : null,
+    mediaUrl: rawKey,
     sentById: opts.userId,
     externalId,
   });

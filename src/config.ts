@@ -97,6 +97,8 @@ const schema = z.object({
   PIX_KEY_TYPE: z.enum(["CPF", "CNPJ", "EMAIL", "PHONE", "EVP"]).default("CNPJ"),
   PIX_MERCHANT_NAME: z.string().default("Calangus Moda Jovem"),
   PIX_MESSAGE: z.string().optional(),
+  /** native = order_details Meta | interactive = botões Opção 1 | auto = native → interactive */
+  PIX_SEND_MODE: z.enum(["auto", "native", "interactive"]).default("interactive"),
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().default("mailto:contato@calangusmodajovem.com"),
