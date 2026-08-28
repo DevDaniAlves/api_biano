@@ -232,6 +232,44 @@ catalogRouter.post(
   }
 );
 
+/** Reordena fotos do produto (primeira = capa na loja). */
+catalogRouter.put(
+  "/admin/products/:productId/images/order",
+  authRequired,
+  catalogManageRequired,
+  async (req, res) => {
+    try {
+      const productId = String(req.params.productId);
+      const imageIds = req.body?.imageIds;
+      if (!Array.isArray(imageIds) || !imageIds.length) {
+        res.status(400).json({ error: "imageIds obrigatório" });
+        return;
+      }
+      const existing = await prisma.productImage.findMany({ where: { productId } });
+      if (
+        imageIds.length !== existing.length ||
+        !imageIds.every((id: unknown) => typeof id === "string" && existing.some((r) => r.id === id))
+      ) {
+        res.status(400).json({ error: "Lista de fotos inválida" });
+        return;
+      }
+      await prisma.$transaction(
+        imageIds.map((id: string, sortOrder: number) =>
+          prisma.productImage.update({ where: { id }, data: { sortOrder } })
+        )
+      );
+      await syncProductCover(productId);
+      const updated = await prisma.product.findUniqueOrThrow({
+        where: { id: productId },
+        include: productInclude,
+      });
+      res.json(serializeProduct(updated, { admin: true }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+);
+
 catalogRouter.delete(
   "/admin/products/:productId/images/:imageId",
   authRequired,
