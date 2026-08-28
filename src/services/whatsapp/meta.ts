@@ -417,6 +417,25 @@ export class MetaClient {
     });
   }
 
+  async sendLocation(opts: {
+    to: string;
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+  }) {
+    return this.req({
+      to: MetaClient.toNumber(opts.to),
+      type: "location",
+      location: {
+        latitude: opts.latitude,
+        longitude: opts.longitude,
+        ...(opts.name ? { name: opts.name } : {}),
+        ...(opts.address ? { address: opts.address } : {}),
+      },
+    });
+  }
+
   /** Marca mensagem (e anteriores da conversa) como lida no WhatsApp. */
   async markAsRead(messageId: string) {
     return this.req({

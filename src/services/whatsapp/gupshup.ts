@@ -314,6 +314,25 @@ export class GupshupClient {
     return this.sendSession(to, buildSessionMessage({ kind: "text", text }));
   }
 
+  async sendLocation(opts: {
+    to: string;
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+  }): Promise<GupshupSendResult> {
+    return this.sendSession(
+      opts.to,
+      buildSessionMessage({
+        kind: "location",
+        latitude: opts.latitude,
+        longitude: opts.longitude,
+        name: opts.name,
+        address: opts.address,
+      })
+    );
+  }
+
   async sendImage(opts: {
     to: string;
     url?: string;

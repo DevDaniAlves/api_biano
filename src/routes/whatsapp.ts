@@ -35,18 +35,22 @@ import {
   UPLOADS_DIR,
   assignContact,
   contactFlags,
+  getStoreLocationConfig,
   getWhatsAppReports,
   handleEvolutionWebhook,
   listContacts,
   openContactToAllSellers,
+  processAutoInactivity,
   saveContactName,
   listMessages,
   resolveContact,
   seedDemoReports,
   sendImageMessage,
   sendImageMessagesConcurrent,
+  sendLocationMessage,
   sendProductOutreach,
   sendTextMessage,
+  updateStoreLocationConfig,
   warnInactivity,
 } from "../services/whatsapp/service.js";
 import { serializeContact } from "../services/whatsapp/contacts.js";
@@ -1314,6 +1318,66 @@ whatsappRouter.post("/contacts/inactivity-warn", async (req, res) => {
     );
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/store-location", async (_req, res) => {
+  try {
+    res.json(await getStoreLocationConfig());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.put("/store-location", async (req, res) => {
+  try {
+    if (req.user?.role !== "admin") {
+      res.status(403).json({ error: "Só admin" });
+      return;
+    }
+    const lat = req.body?.latitude;
+    const lng = req.body?.longitude;
+    const row = await updateStoreLocationConfig({
+      latitude: lat == null || lat === "" ? null : Number(lat),
+      longitude: lng == null || lng === "" ? null : Number(lng),
+      name: req.body?.name != null ? String(req.body.name) : undefined,
+      address: req.body?.address != null ? String(req.body.address) : undefined,
+      message: req.body?.message != null ? String(req.body.message) : undefined,
+    });
+    res.json({
+      latitude: row.storeLatitude,
+      longitude: row.storeLongitude,
+      name: row.storeLocationName,
+      address: row.storeLocationAddress,
+      message: row.storeLocationMessage,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/messages/location", async (req, res) => {
+  try {
+    const contactId = String(req.body?.contactId ?? "").trim();
+    const latitude = Number(req.body?.latitude);
+    const longitude = Number(req.body?.longitude);
+    if (!contactId || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      res.status(400).json({ error: "contactId, latitude e longitude obrigatórios" });
+      return;
+    }
+    const msg = await sendLocationMessage({
+      contactId,
+      latitude,
+      longitude,
+      name: req.body?.name ? String(req.body.name) : null,
+      address: req.body?.address ? String(req.body.address) : null,
+      preamble: req.body?.preamble ? String(req.body.preamble) : null,
+      userId: req.user!.id,
+      role: req.user!.role as "admin" | "seller",
+    });
+    res.json(msg);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

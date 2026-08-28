@@ -27,8 +27,14 @@ export { saveContactSavedName } from "./contacts.js";
 const RATING_MSG =
   "Como foi o atendimento? Responda com uma nota de *1* a *5* (sendo 5 excelente). Obrigado!";
 
-const INACTIVITY_MSG =
-  "Olá! Ainda está por aí? Caso precise de mais alguma informação, estamos à disposição.";
+const INACTIVITY_RECOVERY_MSG =
+  "Olá! Você ainda está por aí? 😊\n\nEstamos aqui caso precise de algo — é só responder esta mensagem que continuamos o atendimento.";
+
+const INACTIVITY_CLOSE_MSG =
+  "Como não recebemos retorno, vamos encerrar este atendimento por enquanto.\n\nQuando quiser falar conosco de novo, é só enviar uma mensagem. Até logo! 👋";
+
+/** @deprecated use INACTIVITY_RECOVERY_MSG */
+const INACTIVITY_MSG = INACTIVITY_RECOVERY_MSG;
 
 function mimeExt(mimetype?: string | null, type?: string, fileName?: string | null) {
   const fromName = fileName?.split(".").pop()?.toLowerCase();
@@ -1248,7 +1254,7 @@ export async function resolveContact(contactId: string) {
   });
 }
 
-/** Aviso de inatividade (somente se ≥ 10 min sem msg do cliente). */
+/** Aviso de inatividade manual (vendedor). */
 export async function warnInactivity(contactId: string, userId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
@@ -1264,7 +1270,7 @@ export async function warnInactivity(contactId: string, userId: string) {
   }
   if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado");
 
-  const text = await sellerPrefix(userId, INACTIVITY_MSG);
+  const text = await sellerPrefix(userId, INACTIVITY_RECOVERY_MSG);
   const r = await sendOutbound({
     to: contact.remoteJid || contact.phone,
     source: "agent",
@@ -1291,6 +1297,268 @@ export async function warnInactivity(contactId: string, userId: string) {
       lastMessagePreview: text.slice(0, 120),
     },
   });
+}
+
+async function sendSystemText(contactId: string, text: string) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  const r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "system",
+    contactId,
+    kind: "text",
+    text,
+    category: "service",
+  });
+  if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
+  await upsertOutboundMessage({
+    contactId,
+    type: "text",
+    body: text,
+    externalId: r.externalId,
+  });
+  await prisma.whatsAppContact.update({
+    where: { id: contactId },
+    data: {
+      lastMessageAt: new Date(),
+      lastMessagePreview: text.slice(0, 120),
+    },
+  });
+}
+
+/** Recuperação automática após INACTIVITY_WARN_MINUTES sem resposta do cliente. */
+export async function autoWarnInactivity(contactId: string) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  if (contact.webhookPaused || contact.status !== "human" || contact.inactivityWarnedAt) return false;
+  const flags = contactFlags(contact);
+  if (!flags.canWarnInactivity) return false;
+  if (!(await messagingEnabled())) return false;
+
+  const text = INACTIVITY_RECOVERY_MSG;
+  const r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "system",
+    contactId,
+    kind: "text",
+    text,
+    category: "service",
+  });
+  if (!r.ok) {
+    console.error("[idle] warn falhou", contact.phone, r.error);
+    return false;
+  }
+  await upsertOutboundMessage({ contactId, type: "text", body: text, externalId: r.externalId });
+  await prisma.whatsAppContact.update({
+    where: { id: contactId },
+    data: {
+      inactivityWarnedAt: new Date(),
+      lastMessageAt: new Date(),
+      lastMessagePreview: text.slice(0, 120),
+    },
+  });
+  console.log(`[idle] aviso ${env.INACTIVITY_WARN_MINUTES}min → ${contact.phone}`);
+  return true;
+}
+
+/** Finalização automática após INACTIVITY_RESOLVE_MINUTES sem resposta do cliente. */
+export async function autoResolveInactivity(contactId: string) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  if (contact.webhookPaused || contact.status !== "human") return false;
+  const flags = contactFlags(contact);
+  if (!flags.canResolveInactivity) return false;
+  if (!(await messagingEnabled())) return false;
+
+  await sendSystemText(contactId, INACTIVITY_CLOSE_MSG);
+  await resolveContact(contactId);
+  console.log(`[idle] encerramento ${env.INACTIVITY_RESOLVE_MINUTES}min → ${contact.phone}`);
+  return true;
+}
+
+/** Cron: aviso e encerramento automáticos por inatividade do cliente. */
+export async function processAutoInactivity() {
+  if (!(await messagingEnabled())) return { warned: 0, closed: 0 };
+  const warnCutoff = new Date(Date.now() - env.INACTIVITY_WARN_MINUTES * 60_000);
+  const resolveCutoff = new Date(Date.now() - env.INACTIVITY_RESOLVE_MINUTES * 60_000);
+
+  const toWarn = await prisma.whatsAppContact.findMany({
+    where: {
+      status: "human",
+      webhookPaused: false,
+      inactivityWarnedAt: null,
+      lastClientMessageAt: { lt: warnCutoff },
+    },
+    take: 80,
+  });
+
+  let warned = 0;
+  for (const c of toWarn) {
+    try {
+      if (await autoWarnInactivity(c.id)) warned++;
+    } catch (err) {
+      console.error("[idle] warn", c.phone, err);
+    }
+  }
+
+  const toClose = await prisma.whatsAppContact.findMany({
+    where: {
+      status: "human",
+      webhookPaused: false,
+      inactivityWarnedAt: { not: null },
+      lastClientMessageAt: { lt: resolveCutoff },
+    },
+    take: 80,
+  });
+
+  let closed = 0;
+  for (const c of toClose) {
+    try {
+      if (await autoResolveInactivity(c.id)) closed++;
+    } catch (err) {
+      console.error("[idle] close", c.phone, err);
+    }
+  }
+
+  return { warned, closed };
+}
+
+export type StoreLocationConfig = {
+  latitude: number | null;
+  longitude: number | null;
+  name: string | null;
+  address: string | null;
+  message: string | null;
+};
+
+export async function getStoreLocationConfig(): Promise<StoreLocationConfig> {
+  const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
+  return {
+    latitude: row?.storeLatitude ?? null,
+    longitude: row?.storeLongitude ?? null,
+    name: row?.storeLocationName ?? null,
+    address: row?.storeLocationAddress ?? null,
+    message: row?.storeLocationMessage ?? null,
+  };
+}
+
+export async function updateStoreLocationConfig(data: Partial<StoreLocationConfig>) {
+  const patch: Record<string, unknown> = {};
+  if (data.latitude !== undefined) patch.storeLatitude = data.latitude;
+  if (data.longitude !== undefined) patch.storeLongitude = data.longitude;
+  if (data.name !== undefined) patch.storeLocationName = data.name?.trim() || null;
+  if (data.address !== undefined) patch.storeLocationAddress = data.address?.trim() || null;
+  if (data.message !== undefined) patch.storeLocationMessage = data.message?.trim() || null;
+  return prisma.whatsAppConnection.upsert({
+    where: { id: "default" },
+    update: patch,
+    create: { id: "default", instanceName: "", status: "disconnected", ...patch },
+    select: {
+      storeLatitude: true,
+      storeLongitude: true,
+      storeLocationName: true,
+      storeLocationAddress: true,
+      storeLocationMessage: true,
+    },
+  });
+}
+
+function formatLocationBody(name?: string | null, address?: string | null) {
+  const parts = [name, address].filter(Boolean);
+  return parts.length ? `📍 ${parts.join("\n")}` : "📍 Localização";
+}
+
+function locationMediaUrl(lat: number, lng: number) {
+  return `${lat},${lng}`;
+}
+
+export async function sendLocationMessage(opts: {
+  contactId: string;
+  latitude: number;
+  longitude: number;
+  name?: string | null;
+  address?: string | null;
+  /** Texto enviado antes do pin (ex.: mensagem da loja). */
+  preamble?: string | null;
+  userId: string;
+  role?: "admin" | "seller";
+}) {
+  const lat = Number(opts.latitude);
+  const lng = Number(opts.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error("Coordenadas inválidas");
+  }
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    throw new Error("Coordenadas fora do intervalo");
+  }
+
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: opts.contactId },
+  });
+  if (
+    (contact.status === "closed" || contact.status === "awaiting_rating") &&
+    !contact.webhookPaused
+  ) {
+    throw new Error("Conversa finalizada — somente leitura");
+  }
+
+  const role = opts.role ?? "seller";
+  if (!(role === "admin" || contact.assignedToId === opts.userId)) {
+    await assumeOnOpen(opts.contactId, opts.userId, role);
+  }
+  if (!(await messagingEnabled())) throw new Error("WhatsApp não configurado");
+
+  const name = opts.name?.trim() || "Localização";
+  const address = opts.address?.trim() || name;
+  const preamble = opts.preamble?.trim();
+
+  if (preamble) {
+    const text = await sellerPrefix(opts.userId, preamble);
+    const tr = await sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "agent",
+      contactId: contact.id,
+      kind: "text",
+      text,
+      category: "service",
+    });
+    if (!tr.ok) throw new Error(`Falha WhatsApp: ${tr.error}`);
+    await upsertOutboundMessage({
+      contactId: contact.id,
+      type: "text",
+      body: text,
+      sentById: opts.userId,
+      externalId: tr.externalId,
+    });
+  }
+
+  const r = await sendOutbound({
+    to: contact.remoteJid || contact.phone,
+    source: "agent",
+    contactId: contact.id,
+    kind: "location",
+    location: { latitude: lat, longitude: lng, name, address },
+    category: "service",
+  });
+  if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
+
+  const body = formatLocationBody(name, address);
+  const msg = await upsertOutboundMessage({
+    contactId: contact.id,
+    type: "location",
+    body,
+    mediaUrl: locationMediaUrl(lat, lng),
+    sentById: opts.userId,
+    externalId: r.externalId,
+  });
+
+  await prisma.whatsAppContact.update({
+    where: { id: contact.id },
+    data: {
+      lastMessageAt: new Date(),
+      lastMessagePreview: body.slice(0, 120),
+      ...(role === "admin" ? {} : { status: "human" as const, assignedToId: opts.userId }),
+    },
+  });
+
+  return msg;
 }
 
 export async function handleRatingReply(contactId: string, body: string | null) {
@@ -1479,6 +1747,7 @@ export async function handleEvolutionWebhook(payload: Record<string, unknown>) {
         ? {
             unreadCount: { increment: 1 },
             lastClientMessageAt: new Date(),
+            inactivityWarnedAt: null,
             boletoReminderAt: null,
           }
         : {}),

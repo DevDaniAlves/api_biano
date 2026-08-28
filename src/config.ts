@@ -86,8 +86,8 @@ const schema = z.object({
   /** Pasta persistente de mídia. No Railway, monte um Volume em /data e use /data/uploads. */
   UPLOADS_DIR: z.string().optional(),
   RATING_TIMEOUT_MINUTES: z.coerce.number().default(5),
-  INACTIVITY_WARN_MINUTES: z.coerce.number().default(10),
-  INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(15),
+  INACTIVITY_WARN_MINUTES: z.coerce.number().default(5),
+  INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(10),
   /** Minutos sem msg do cliente no fluxo Financeiro → fecha e reinicia. 0 = off. Atendimento não auto-fecha. */
   CLIENT_IDLE_CLOSE_MINUTES: z.coerce.number().default(5),
   /** Horas sem mensagem (qualquer lado) para fechar a conversa sem enviar texto. */

@@ -8,7 +8,7 @@ import { meta, MetaClient } from "./meta.js";
 
 export type WhatsAppProvider = "meta" | "evolution" | "gupshup";
 export type SendSource = "boleto" | "bot" | "agent" | "system";
-export type SendKind = "text" | "template" | "media" | "audio" | "interactive";
+export type SendKind = "text" | "template" | "media" | "audio" | "interactive" | "location";
 export type SendCategory =
   | "utility"
   | "service"
@@ -69,6 +69,12 @@ export async function sendOutbound(opts: {
   };
   /** Botões/lista Cloud API (Meta / Gupshup FBC). */
   interactive?: Record<string, unknown>;
+  location?: {
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+  };
   contactId?: string | null;
   boletoId?: string | null;
   category?: SendCategory;
@@ -91,11 +97,13 @@ export async function sendOutbound(opts: {
       ? "template"
       : opts.interactive
         ? "interactive"
-        : opts.media?.mediatype === "audio"
-          ? "audio"
-          : opts.media
-            ? "media"
-            : "text");
+        : opts.location
+          ? "location"
+          : opts.media?.mediatype === "audio"
+            ? "audio"
+            : opts.media
+              ? "media"
+              : "text");
 
   const category: SendCategory =
     opts.category ??
@@ -226,6 +234,14 @@ export async function sendOutbound(opts: {
         });
       } else if (opts.interactive) {
         r = await meta.sendInteractive(phone, opts.interactive);
+      } else if (opts.location) {
+        r = await meta.sendLocation({
+          to: phone,
+          latitude: opts.location.latitude,
+          longitude: opts.location.longitude,
+          name: opts.location.name,
+          address: opts.location.address,
+        });
       } else {
         r = await meta.sendText(phone, opts.text ?? "", opts.quoted?.externalId);
       }
@@ -363,6 +379,14 @@ export async function sendOutbound(opts: {
         }
       } else if (opts.interactive) {
         r = await gupshup.sendInteractive(phone, opts.interactive);
+      } else if (opts.location) {
+        r = await gupshup.sendLocation({
+          to: phone,
+          latitude: opts.location.latitude,
+          longitude: opts.location.longitude,
+          name: opts.location.name,
+          address: opts.location.address,
+        });
       } else {
         r = await gupshup.sendText(phone, opts.text ?? "");
       }
@@ -399,7 +423,15 @@ export async function sendOutbound(opts: {
     }
 
     let r;
-    if (opts.media) {
+    if (opts.location) {
+      r = await evolution.sendLocation({
+        phone: opts.to,
+        latitude: opts.location.latitude,
+        longitude: opts.location.longitude,
+        name: opts.location.name,
+        address: opts.location.address,
+      });
+    } else if (opts.media) {
       const mediaPayload = opts.media.base64 ?? opts.media.link ?? "";
       if (opts.media.mediatype === "audio" && opts.media.base64) {
         r = await evolution.sendWhatsAppAudio({ phone: opts.to, audio: opts.media.base64 });

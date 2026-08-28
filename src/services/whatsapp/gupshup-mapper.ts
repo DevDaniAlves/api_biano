@@ -59,15 +59,28 @@ export function unwrapGupshupBodies(body: unknown): Record<string, unknown>[] {
 }
 
 export function buildSessionMessage(opts: {
-  kind: "text" | "image" | "file" | "audio" | "video";
+  kind: "text" | "image" | "file" | "audio" | "video" | "location";
   text?: string;
   url?: string;
   caption?: string;
   filename?: string;
   mediaId?: string;
+  latitude?: number;
+  longitude?: number;
+  name?: string;
+  address?: string;
 }): string {
   if (opts.kind === "text") {
     return JSON.stringify({ type: "text", text: opts.text ?? "" });
+  }
+  if (opts.kind === "location") {
+    return JSON.stringify({
+      type: "location",
+      latitude: opts.latitude,
+      longitude: opts.longitude,
+      ...(opts.name ? { name: opts.name } : {}),
+      ...(opts.address ? { address: opts.address } : {}),
+    });
   }
   if (opts.kind === "image") {
     if (opts.mediaId) {

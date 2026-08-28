@@ -431,16 +431,15 @@ export async function handleMetaWebhook(payload: Record<string, unknown>) {
             name?: string;
             address?: string;
           };
-          const lat = loc.latitude != null ? String(loc.latitude) : "";
-          const lng = loc.longitude != null ? String(loc.longitude) : "";
-          const label = [loc.name, loc.address].filter(Boolean).join(" — ");
-          const body = label
-            ? `Localização: ${label} (${lat}, ${lng})`
-            : `Localização: ${lat}, ${lng}`;
+          const lat = loc.latitude != null ? Number(loc.latitude) : NaN;
+          const lng = loc.longitude != null ? Number(loc.longitude) : NaN;
+          const label = [loc.name, loc.address].filter(Boolean).join("\n");
+          const body = label ? `📍 ${label}` : `📍 Localização`;
           await upsertInboundMessage({
             phone: from,
             body,
-            type: "text",
+            type: "location",
+            mediaUrl: Number.isFinite(lat) && Number.isFinite(lng) ? `${lat},${lng}` : null,
             externalId: id,
             profileName: profileName || null,
             quotedExternalId,

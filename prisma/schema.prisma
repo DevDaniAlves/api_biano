@@ -338,6 +338,12 @@ model WhatsAppConnection {
   coexistenceEnabled   Boolean   @default(false)
   /** Menus/respostas automáticas do CRM (departamento, vendedores, etc.). */
   botEnabled           Boolean   @default(true)
+  /** Localização fixa da loja para envio no atendimento. */
+  storeLatitude        Float?
+  storeLongitude       Float?
+  storeLocationName    String?
+  storeLocationAddress String?
+  storeLocationMessage String?
   connectedAt          DateTime?
   updatedAt            DateTime  @updatedAt
 }

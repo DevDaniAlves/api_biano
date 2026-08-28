@@ -357,6 +357,32 @@ export class EvolutionClient {
     return null;
   }
 
+  async sendLocation(opts: {
+    phone: string;
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+  }) {
+    const instance = await this.resolveInstance();
+    if (!instance) {
+      console.error("[evolution] sendLocation: nenhuma instância em Conectar WhatsApp");
+      return { ok: false, status: 0, data: null, text: "Configure a instância em Conectar WhatsApp" };
+    }
+    const number = this.sendNumber(opts.phone);
+    const r = await this.req("POST", `/message/sendLocation/${encodeURIComponent(instance)}`, {
+      number,
+      latitude: opts.latitude,
+      longitude: opts.longitude,
+      name: opts.name || "Localização",
+      address: opts.address || opts.name || "Localização",
+    });
+    if (!r.ok) {
+      console.error("[evolution] sendLocation", number, r.status, r.text.slice(0, 300));
+    }
+    return r;
+  }
+
   async deleteOwnMessage(remoteJid: string, messageId: string) {
     const instance = await this.resolveInstance();
     if (!instance) {

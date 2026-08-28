@@ -8,7 +8,7 @@ import { catalogRouter } from "./routes/catalog.js";
 import { whatsappRouter } from "./routes/whatsapp.js";
 import { swaggerSpec } from "./swagger.js";
 import { expireClientIdleConversations, expireIdleConversations, expireStaleOffers } from "./services/whatsapp/flow.js";
-import { expireStaleRatings, UPLOADS_DIR } from "./services/whatsapp/service.js";
+import { expireStaleRatings, processAutoInactivity, UPLOADS_DIR } from "./services/whatsapp/service.js";
 import { failStaleAutomationRun, tickGestorAutomation } from "./services/gestor-automation.js";
 import { failStaleRunningJobs } from "./services/jobs.js";
 
@@ -50,6 +50,7 @@ const server = app.listen(env.PORT, () => {
   setInterval(() => {
     expireStaleOffers().catch((e) => console.error("[fila]", e));
     expireStaleRatings().catch((e) => console.error("[rating]", e));
+    processAutoInactivity().catch((e) => console.error("[idle-auto]", e));
     expireClientIdleConversations().catch((e) => console.error("[idle-client]", e));
     expireIdleConversations().catch((e) => console.error("[idle]", e));
     tickGestorAutomation().catch((e) => console.error("[gestor-auto]", e));
