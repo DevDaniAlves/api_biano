@@ -468,13 +468,14 @@ export class MetaClient {
         : normalizedKey;
     const receiverName = projectReceiverName(opts.merchantName);
     const receiverCity = projectCity(opts.merchantCity?.trim() || "SAO PAULO");
+    const totalCents = Math.max(1, opts.totalAmountCents ?? env.PIX_TOTAL_AMOUNT_CENTS ?? 100);
     const pixCode = generateStaticBrCode({
       pixKey: pixKeyForBrCode,
       receiverName,
       receiverCity,
       referenceLabel: buildBrCodeRef(referenceId),
+      amount: totalCents / 100,
     });
-    const totalCents = Math.max(1, opts.totalAmountCents ?? env.PIX_TOTAL_AMOUNT_CENTS ?? 100);
     return {
       type: "order_details",
       body: { text: opts.bodyText?.trim() || "Segue nossa chave Pix 👇" },
@@ -552,6 +553,7 @@ export class MetaClient {
     keyType: "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "EVP";
     bodyText?: string;
     referenceId?: string;
+    totalAmountCents?: number;
   }) {
     return this.sendInteractive(
       MetaClient.toNumber(opts.to),

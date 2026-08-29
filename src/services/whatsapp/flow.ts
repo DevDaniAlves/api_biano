@@ -6,6 +6,7 @@ import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
 import { gupshup } from "./gupshup.js";
 import {
   BUSINESS,
+  businessHoursLabel,
   isBusinessHours,
   isOnLeave,
   isUserUnavailable,
@@ -100,14 +101,26 @@ function financeSelfServiceMessage() {
 }
 
 export async function ensureFlow() {
-  return prisma.whatsAppFlow.upsert({
+  const closedDefault = `Nosso horário de atendimento se encerrou (${businessHoursLabel()}). Atenderemos assim que possível.\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.`;
+  const row = await prisma.whatsAppFlow.upsert({
     where: { id: "default" },
     update: {},
     create: {
       id: "default",
+      closedMessage: closedDefault,
       options: DEFAULT_OPTIONS as unknown as Prisma.InputJsonValue,
     },
   });
+  if (
+    row.closedMessage.includes("seg–sex, 08:00–18:00") ||
+    row.closedMessage.includes("seg-sex, 08:00-18:00")
+  ) {
+    return prisma.whatsAppFlow.update({
+      where: { id: "default" },
+      data: { closedMessage: closedDefault },
+    });
+  }
+  return row;
 }
 
 export async function getFlow() {
@@ -994,7 +1007,7 @@ export function buildOutsideHoursMessage(closedMessage: string) {
 function financeAfterHoursMessage() {
   return (
     `${financeSelfServiceMessage()}\n\n` +
-    `Estamos fora do horário de atendimento financeiro. Digite *1* para entrar na fila e ser atendido no horário comercial.\n` +
+    `Estamos fora do horário de atendimento financeiro (${businessHoursLabel()}). Digite *1* para entrar na fila e ser atendido no horário comercial.\n` +
     `${BACK_HINT}`
   );
 }

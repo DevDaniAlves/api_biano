@@ -1422,10 +1422,16 @@ whatsappRouter.post("/messages/pix", async (req, res) => {
       res.status(400).json({ error: "contactId obrigatório" });
       return;
     }
+    const amountCents = Number(req.body?.amountCents);
+    if (!Number.isFinite(amountCents) || amountCents < 1) {
+      res.status(400).json({ error: "amountCents obrigatório (valor em centavos, mínimo 1)" });
+      return;
+    }
     const msg = await sendPixKeyMessage({
       contactId,
       userId: req.user!.id,
       role: req.user!.role as "admin" | "seller",
+      amountCents: Math.round(amountCents),
     });
     res.json(msg);
   } catch (err) {

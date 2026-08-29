@@ -4,11 +4,22 @@ import { env } from "../../config.js";
 
 export const BUSINESS = {
   timezone: "America/Sao_Paulo",
-  weekdays: [1, 2, 3, 4, 5], // seg–sex
-  startMin: 8 * 60,
-  endMin: 18 * 60,
+  /** JS day 0=dom … 6=sáb → [início, fim] em minutos do dia; null = fechado */
+  hours: {
+    0: null,
+    1: [8 * 60, 18 * 60],
+    2: [8 * 60, 18 * 60],
+    3: [8 * 60, 18 * 60],
+    4: [8 * 60, 18 * 60],
+    5: [8 * 60, 18 * 60],
+    6: [8 * 60, 16 * 60],
+  } as Record<number, [number, number] | null>,
   offerMinutes: 10,
 };
+
+export function businessHoursLabel(): string {
+  return "seg–sex 08:00–18:00, sáb 08:00–16:00";
+}
 
 export function nowInSaoPaulo(): Date {
   return new Date(new Date().toLocaleString("en-US", { timeZone: BUSINESS.timezone }));
@@ -20,9 +31,10 @@ export function minutesOfDay(d: Date): number {
 
 export function isBusinessHours(d = nowInSaoPaulo()): boolean {
   if (env.SKIP_BUSINESS_HOURS) return true;
-  if (!BUSINESS.weekdays.includes(d.getDay())) return false;
+  const slot = BUSINESS.hours[d.getDay()];
+  if (!slot) return false;
   const m = minutesOfDay(d);
-  return m >= BUSINESS.startMin && m < BUSINESS.endMin;
+  return m >= slot[0] && m < slot[1];
 }
 
 export interface UnavailabilityWindow {

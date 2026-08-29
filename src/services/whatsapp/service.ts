@@ -1766,7 +1766,13 @@ export async function sendPixKeyMessage(opts: {
   contactId: string;
   userId: string;
   role?: "admin" | "seller";
+  amountCents: number;
 }) {
+  const amountCents = Math.round(Number(opts.amountCents));
+  if (!Number.isFinite(amountCents) || amountCents < 1) {
+    throw new Error("Informe um valor válido para o Pix");
+  }
+
   const cfg = await getPixConfig();
   if (!cfg.key) {
     throw new Error("Chave Pix não configurada. Cadastre em Conectar WhatsApp.");
@@ -1790,8 +1796,13 @@ export async function sendPixKeyMessage(opts: {
 
   const merchantName = cfg.merchantName || "Pix";
   const rawKey = normalizePixKeyRaw(cfg.key, cfg.keyType);
-  const bodyPreview = formatPixBody(merchantName, cfg.key, cfg.keyType);
+  const amountBrl = (amountCents / 100).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const bodyPreview = `${formatPixBody(merchantName, cfg.key, cfg.keyType)}\nValor: R$ ${amountBrl}`;
   const keyLabel = `${pixKeyTypeLabel(cfg.keyType)}: ${formatPixKeyDisplay(cfg.key, cfg.keyType)}`;
+  const pixBodyText = [cfg.message?.trim(), `Valor: R$ ${amountBrl}`].filter(Boolean).join("\n");
   const provider = await activeProvider();
   const pixMode = env.PIX_SEND_MODE;
   const pixTemplateName = (env.PIX_TEMPLATE_NAME || "").trim();
@@ -1868,7 +1879,8 @@ export async function sendPixKeyMessage(opts: {
         merchantName,
         key: cfg.key!,
         keyType: cfg.keyType,
-        bodyText: cfg.message ?? undefined,
+        bodyText: pixBodyText || undefined,
+        totalAmountCents: amountCents,
       },
       category: "service",
       bodyPreview,

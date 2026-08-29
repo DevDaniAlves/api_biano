@@ -80,6 +80,7 @@ export async function sendOutbound(opts: {
     key: string;
     keyType: "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "EVP";
     bodyText?: string;
+    totalAmountCents?: number;
   };
   contactId?: string | null;
   boletoId?: string | null;
@@ -257,6 +258,7 @@ export async function sendOutbound(opts: {
           key: opts.pix.key,
           keyType: opts.pix.keyType,
           bodyText: opts.pix.bodyText,
+          totalAmountCents: opts.pix.totalAmountCents,
         });
       } else {
         r = await meta.sendText(phone, opts.text ?? "", opts.quoted?.externalId);
