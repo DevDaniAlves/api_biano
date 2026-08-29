@@ -80,7 +80,7 @@ async function main() {
     data: {
       welcomeMessage: "Olá! Bem-vindo à Calangus Moda Jovem. Escolha um atendente:",
       closedMessage:
-        "Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n⏰ Horário de atendimento\n\n🗓️ Segunda a sexta: 08h às 18h30\n🗓️ Sábado: 08h às 16h30\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.",
+        "Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n⏰ Horário de atendimento\n\n🗓️ Segunda a sexta: 08h às 18h30\n🗓️ Sábado: 08h às 16h30",
       options: options as object[],
     },
   });

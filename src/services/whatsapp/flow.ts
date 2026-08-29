@@ -123,8 +123,7 @@ function financeSelfServiceMessage() {
 export async function ensureFlow() {
   const closedDefault =
     "Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n" +
-    `${businessHoursBlock()}\n\n` +
-    "Enquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.";
+    `${businessHoursBlock()}`;
   const row = await prisma.whatsAppFlow.upsert({
     where: { id: "default" },
     update: {},
@@ -139,7 +138,8 @@ export async function ensureFlow() {
     row.closedMessage.includes("seg-sex, 08:00-18:00") ||
     (row.closedMessage.includes("08:00–18:00") && !row.closedMessage.includes("18:30")) ||
     (row.closedMessage.includes("08:00-18:00") && !row.closedMessage.includes("18:30")) ||
-    !row.closedMessage.includes("⏰ Horário de atendimento")
+    !row.closedMessage.includes("⏰ Horário de atendimento") ||
+    row.closedMessage.includes("Enquanto isso, dê uma olhada no nosso catálogo")
   ) {
     return prisma.whatsAppFlow.update({
       where: { id: "default" },
@@ -595,8 +595,21 @@ async function handleCatalogChoice(contactId: string) {
   });
   const url = (env.CATALOG_PUBLIC_URL || "").replace(/\/+$/, "").trim();
   const msg = url
-    ? `Confira nosso *catálogo de produtos*:\n${url}\n\nPara falar com um vendedor, digite *0* para voltar ao menu ou escolha *1 — Atendimento*.`
-    : "Nosso catálogo está disponível no site da Calangus.\n\nPara falar com um vendedor, digite *0* para voltar ao menu.";
+    ? (
+        "📦 *Catálogo Calangus Moda Jovem*\n\n" +
+        "Veja nossas novidades pelo link abaixo:\n" +
+        `${url}\n\n` +
+        "Precisa de ajuda para escolher?\n" +
+        "Digite *1* — Atendimento\n" +
+        "Digite *0* — Voltar ao menu"
+      )
+    : (
+        "📦 *Catálogo Calangus Moda Jovem*\n\n" +
+        "Nosso catálogo está disponível no site da loja.\n\n" +
+        "Precisa de ajuda para escolher?\n" +
+        "Digite *1* — Atendimento\n" +
+        "Digite *0* — Voltar ao menu"
+      );
   const externalId = await botSend(contact, msg);
   await persistIfSent(
     contactId,
@@ -1057,18 +1070,28 @@ export async function handleMenuChoice(contactId: string, raw: string) {
   await persistIfSent(contactId, msg, undefined, externalId);
 }
 
-/** Fora do horário: avisa, sugere o catálogo e pergunta o que busca. */
+/** Fora do horário: avisa, sugere o catálogo e confirma fila. */
 export function buildOutsideHoursMessage(closedMessage: string) {
   const url = (env.CATALOG_PUBLIC_URL || "").replace(/\/+$/, "").trim();
-  const base = closedMessage.trim();
-  const withCatalog =
-    url && !base.includes(url)
-      ? `${base}\n\nEnquanto isso, dê uma olhada no nosso *catálogo* e conheça as novidades da Calangus:\n${url}`
-      : base;
-  return (
-    `${withCatalog}\n\n` +
-    `Me conta o que você está buscando? Assim que um vendedor estiver disponível, alguém da nossa equipe irá te atender.`
+  let base = closedMessage.trim();
+
+  // Remove texto legado de catálogo embutido no closedMessage (evita duplicar).
+  if (base.includes("Enquanto isso, dê uma olhada no nosso catálogo")) {
+    base = base.replace(/\n\nEnquanto isso, dê uma olhada no nosso catálogo[\s\S]*$/i, "").trim();
+  }
+
+  const parts = [base];
+
+  if (url && !base.includes(url)) {
+    parts.push(`📦 Enquanto isso, confira nosso catálogo:\n${url}`);
+  }
+
+  parts.push(
+    "Me conta o que você está buscando?\n\n" +
+      "Assim que um vendedor estiver disponível, iremos te atender."
   );
+
+  return parts.join("\n\n");
 }
 
 function financeAfterHoursMessage() {
