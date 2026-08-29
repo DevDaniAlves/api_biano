@@ -53,7 +53,7 @@ const DEFAULT_OPTIONS: FlowOption[] = [
   { key: "4", label: "Não tenho preferência", action: "queue", queueId: null },
 ];
 
-const BACK_HINT = "0 - Voltar";
+const BACK_HINT = "Digite *0* — Voltar ao menu";
 
 const DEPT_OPTIONS_TEXT =
   "1 — Atendimento\n2 — Financeiro\n3 — Catálogo de produtos";
@@ -107,7 +107,8 @@ function isBackCommand(body: string | null): boolean {
   if (!body) return false;
   const t = body.trim().toLowerCase().replace(/\s+/g, " ");
   if (t === "voltar" || t === "0") return true;
-  if (/^0\s*[-–.]?\s*voltar$/.test(t)) return true;
+  if (/^0\s*[-–.]?\s*voltar/.test(t)) return true;
+  if (/voltar ao menu/.test(t)) return true;
   return false;
 }
 
@@ -589,6 +590,18 @@ async function goBackToDepartmentMenu(contactId: string) {
   await sendDepartmentMenu(contactId, undefined, { force: true });
 }
 
+async function enqueueAfterHoursAtendimento(contactId: string) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  if (contact.status === "waiting") return;
+
+  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+  await openContactToAllSellers({
+    contactId,
+    queueId: queue?.id ?? null,
+    flow: "atendimento",
+  });
+}
+
 async function handleCatalogChoice(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
@@ -601,14 +614,14 @@ async function handleCatalogChoice(contactId: string) {
         `${url}\n\n` +
         "Precisa de ajuda para escolher?\n" +
         "Digite *1* — Atendimento\n" +
-        "Digite *0* — Voltar ao menu"
+        BACK_HINT
       )
     : (
         "📦 *Catálogo Calangus Moda Jovem*\n\n" +
         "Nosso catálogo está disponível no site da loja.\n\n" +
         "Precisa de ajuda para escolher?\n" +
         "Digite *1* — Atendimento\n" +
-        "Digite *0* — Voltar ao menu"
+        BACK_HINT
       );
   const externalId = await botSend(contact, msg);
   await persistIfSent(
@@ -616,7 +629,7 @@ async function handleCatalogChoice(contactId: string) {
     msg,
     {
       status: "bot",
-      botMenuStep: "department",
+      botMenuStep: "catalog",
       botFlow: null,
     },
     externalId
@@ -891,9 +904,17 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
   const afterHours = !isBusinessHours();
 
   if (key === "3") {
+    const current = await prisma.whatsAppContact.findUnique({
+      where: { id: contactId },
+      select: { botMenuStep: true },
+    });
+    if (current?.botMenuStep === "catalog") {
+      await handleCatalogChoice(contactId);
+      return;
+    }
     const claimed = await prisma.whatsAppContact.updateMany({
       where: { id: contactId, status: "bot", botMenuStep: "department" },
-      data: { botMenuStep: "department", botFlow: null },
+      data: { botMenuStep: "catalog", botFlow: null },
     });
     if (claimed.count === 0) {
       console.log("[bot] departamento já consumido, skip", contactId, key);
@@ -904,9 +925,13 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     return;
   }
 
-  // Claim atômico do passo departamento (evita 2 webhooks processarem o mesmo "1"/"2").
+  // Claim atômico do passo departamento/catálogo (evita 2 webhooks processarem o mesmo "1"/"2").
   const claimed = await prisma.whatsAppContact.updateMany({
-    where: { id: contactId, status: "bot", botMenuStep: "department" },
+    where: {
+      id: contactId,
+      status: "bot",
+      botMenuStep: { in: ["department", "catalog"] },
+    },
     data: {
       botMenuStep:
         key === "1"
@@ -1088,7 +1113,8 @@ export function buildOutsideHoursMessage(closedMessage: string) {
 
   parts.push(
     "Me conta o que você está buscando?\n\n" +
-      "Assim que um vendedor estiver disponível, iremos te atender."
+      "Assim que um vendedor estiver disponível, iremos te atender.\n\n" +
+      BACK_HINT
   );
 
   return parts.join("\n\n");
@@ -1104,22 +1130,24 @@ function financeAfterHoursMessage() {
   );
 }
 
-/** Fora do horário + Atendimento: mensagem + fila aberta para a equipe. */
+/** Fora do horário + Atendimento: avisa e aguarda resposta antes de entrar na fila. */
 export async function handleAfterHoursAtendimento(contactId: string) {
   const flow = await getFlow();
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
   const msg = buildOutsideHoursMessage(flow.closedMessage);
-  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
-  await openContactToAllSellers({
+  const externalId = await botSend(contact, msg);
+  await persistIfSent(
     contactId,
-    queueId: queue?.id ?? null,
-    flow: "atendimento",
-  });
-  const fresh = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
-  const externalId = await botSend(fresh, msg);
-  await persistIfSent(contactId, msg, undefined, externalId);
+    msg,
+    {
+      status: "bot",
+      botMenuStep: "after_hours_atendimento",
+      botFlow: "atendimento",
+    },
+    externalId
+  );
 }
 
 /** Fora do horário + Financeiro: crediário + digite 1 (ainda no bot). */
@@ -1210,6 +1238,18 @@ export async function processInboundBot(contactId: string, body: string | null, 
           await goBackToDepartmentMenu(contactId);
           return;
         }
+        if (existing.botMenuStep === "after_hours_atendimento") {
+          await enqueueAfterHoursAtendimento(contactId);
+          return;
+        }
+        if (existing.botMenuStep === "catalog") {
+          if (body && /^\s*1/.test(body)) {
+            await handleDepartmentChoice(contactId, body);
+          } else {
+            await handleCatalogChoice(contactId);
+          }
+          return;
+        }
         if (existing.botMenuStep === "finance_after_hours") {
           if (body && /^\s*\d+/.test(body)) {
             await handleFinanceAfterHoursConfirm(contactId, body);
@@ -1257,6 +1297,18 @@ export async function processInboundBot(contactId: string, body: string | null, 
     if (contact.status === "bot") {
       if (isBackCommand(body)) {
         await goBackToDepartmentMenu(contactId);
+        return;
+      }
+      if (contact.botMenuStep === "after_hours_atendimento") {
+        await enqueueAfterHoursAtendimento(contactId);
+        return;
+      }
+      if (contact.botMenuStep === "catalog") {
+        if (body && /^\s*1/.test(body)) {
+          await handleDepartmentChoice(contactId, body);
+        } else {
+          await handleCatalogChoice(contactId);
+        }
         return;
       }
       if (body && /^\s*\d+/.test(body)) {
