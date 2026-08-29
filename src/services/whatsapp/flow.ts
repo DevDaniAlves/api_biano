@@ -6,7 +6,7 @@ import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
 import { gupshup } from "./gupshup.js";
 import {
   BUSINESS,
-  businessHoursLabel,
+  businessHoursBlock,
   isBusinessHours,
   isOnLeave,
   isUserUnavailable,
@@ -14,7 +14,10 @@ import {
   assumeMetricStart,
   nowInSaoPaulo,
 } from "./schedule.js";
-import { contactDisplayName } from "./contacts.js";
+import {
+  contactDisplayName,
+  resolveRegisteredGreetingName,
+} from "./contacts.js";
 import { userCanSeeAllMessages } from "../auth.js";
 
 /** Menus/auto-respostas do CRM. Desligar em Conectar WhatsApp para testes manuais. */
@@ -50,9 +53,26 @@ const DEFAULT_OPTIONS: FlowOption[] = [
   { key: "4", label: "Não tenho preferência", action: "queue", queueId: null },
 ];
 
-const DEPT_BODY = "Olá! Bem-vindo à Calangus.\n\nEscolha o setor:";
-
 const BACK_HINT = "0 - Voltar";
+
+const DEPT_OPTIONS_TEXT =
+  "1 — Atendimento\n2 — Financeiro\n3 — Catálogo de produtos";
+
+export async function buildDepartmentWelcomeBody(
+  contact: { phone: string; savedName?: string | null }
+): Promise<string> {
+  const name = await resolveRegisteredGreetingName(contact);
+  const greeting = name
+    ? `Olá, ${name}! Bem-vindo(a) à CALANGUS MODA JOVEM!`
+    : "Olá! Bem-vindo(a) à CALANGUS MODA JOVEM!";
+
+  return (
+    `${greeting}\n\n` +
+    "Para ser atendido, escolha uma das opções abaixo:\n\n" +
+    `${DEPT_OPTIONS_TEXT}\n\n` +
+    "Estamos à disposição para atender você!"
+  );
+}
 
 export type BotFlowKind = "atendimento" | "financeiro";
 
@@ -101,7 +121,10 @@ function financeSelfServiceMessage() {
 }
 
 export async function ensureFlow() {
-  const closedDefault = `Nosso horário de atendimento se encerrou (${businessHoursLabel()}). Atenderemos assim que possível.\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.`;
+  const closedDefault =
+    "Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n" +
+    `${businessHoursBlock()}\n\n` +
+    "Enquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.";
   const row = await prisma.whatsAppFlow.upsert({
     where: { id: "default" },
     update: {},
@@ -113,7 +136,10 @@ export async function ensureFlow() {
   });
   if (
     row.closedMessage.includes("seg–sex, 08:00–18:00") ||
-    row.closedMessage.includes("seg-sex, 08:00-18:00")
+    row.closedMessage.includes("seg-sex, 08:00-18:00") ||
+    (row.closedMessage.includes("08:00–18:00") && !row.closedMessage.includes("18:30")) ||
+    (row.closedMessage.includes("08:00-18:00") && !row.closedMessage.includes("18:30")) ||
+    !row.closedMessage.includes("⏰ Horário de atendimento")
   ) {
     return prisma.whatsAppFlow.update({
       where: { id: "default" },
@@ -507,16 +533,17 @@ export async function restartToBot(contactId: string) {
   });
 }
 
-/** Menu departamento (Financeiro / Atendimento). */
+/** Menu departamento (Atendimento / Financeiro / Catálogo). */
 export async function sendDepartmentMenu(
   contactId: string,
-  bodyText = DEPT_BODY,
+  bodyText?: string,
   opts?: { force?: boolean }
 ) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const preview = `${bodyText}\n\n1 - Atendimento\n2 - Financeiro`;
+  const body = bodyText ?? await buildDepartmentWelcomeBody(contact);
+  const preview = body;
   const recentMenu = await prisma.whatsAppMessage.findFirst({
     where: {
       contactId,
@@ -536,11 +563,12 @@ export async function sendDepartmentMenu(
   }
   const interactive = {
     type: "button",
-    body: { text: bodyText },
+    body: { text: body },
     action: {
       buttons: [
         { type: "reply", reply: { id: "1", title: "Atendimento" } },
         { type: "reply", reply: { id: "2", title: "Financeiro" } },
+        { type: "reply", reply: { id: "3", title: "Catálogo" } },
       ],
     },
   };
@@ -558,7 +586,28 @@ export async function sendDepartmentMenu(
 }
 
 async function goBackToDepartmentMenu(contactId: string) {
-  await sendDepartmentMenu(contactId, DEPT_BODY, { force: true });
+  await sendDepartmentMenu(contactId, undefined, { force: true });
+}
+
+async function handleCatalogChoice(contactId: string) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+  });
+  const url = (env.CATALOG_PUBLIC_URL || "").replace(/\/+$/, "").trim();
+  const msg = url
+    ? `Confira nosso *catálogo de produtos*:\n${url}\n\nPara falar com um vendedor, digite *0* para voltar ao menu ou escolha *1 — Atendimento*.`
+    : "Nosso catálogo está disponível no site da Calangus.\n\nPara falar com um vendedor, digite *0* para voltar ao menu.";
+  const externalId = await botSend(contact, msg);
+  await persistIfSent(
+    contactId,
+    msg,
+    {
+      status: "bot",
+      botMenuStep: "department",
+      botFlow: null,
+    },
+    externalId
+  );
 }
 
 /** Menu de vendedores / fila (Atendimento). */
@@ -817,12 +866,30 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
 
   const key = raw.trim().replace(/[^\d]/g, "").slice(0, 1);
 
-  if (key !== "1" && key !== "2") {
-    await sendDepartmentMenu(contactId, "Opção inválida. Escolha o setor:");
+  if (key !== "1" && key !== "2" && key !== "3") {
+    const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+      where: { id: contactId },
+    });
+    const welcome = await buildDepartmentWelcomeBody(contact);
+    await sendDepartmentMenu(contactId, `Opção inválida.\n\n${welcome}`);
     return;
   }
 
   const afterHours = !isBusinessHours();
+
+  if (key === "3") {
+    const claimed = await prisma.whatsAppContact.updateMany({
+      where: { id: contactId, status: "bot", botMenuStep: "department" },
+      data: { botMenuStep: "department", botFlow: null },
+    });
+    if (claimed.count === 0) {
+      console.log("[bot] departamento já consumido, skip", contactId, key);
+      return;
+    }
+    markMenuEchoGuard(contactId, key);
+    await handleCatalogChoice(contactId);
+    return;
+  }
 
   // Claim atômico do passo departamento (evita 2 webhooks processarem o mesmo "1"/"2").
   const claimed = await prisma.whatsAppContact.updateMany({
@@ -1007,7 +1074,9 @@ export function buildOutsideHoursMessage(closedMessage: string) {
 function financeAfterHoursMessage() {
   return (
     `${financeSelfServiceMessage()}\n\n` +
-    `Estamos fora do horário de atendimento financeiro (${businessHoursLabel()}). Digite *1* para entrar na fila e ser atendido no horário comercial.\n` +
+    "Estamos fora do horário de atendimento financeiro.\n\n" +
+    `${businessHoursBlock()}\n\n` +
+    "Digite *1* para entrar na fila e ser atendido no horário comercial.\n" +
     `${BACK_HINT}`
   );
 }

@@ -64,14 +64,14 @@ async function main() {
       id: "default",
       welcomeMessage: "Olá! Bem-vindo à Calangus. Escolha um atendente:",
       closedMessage:
-        "Nosso horário de atendimento se encerrou (seg–sex 08:00–18:00, sáb 08:00–16:00). Atenderemos assim que possível.\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.",
+        "Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n⏰ Horário de atendimento\n\n🗓️ Segunda a sexta: 08h às 18h30\n🗓️ Sábado: 08h às 16h30\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.",
       menuEnabled: true,
       options: [],
     },
     update: {
       welcomeMessage: "Olá! Bem-vindo à Calangus. Escolha um atendente:",
       closedMessage:
-        "Nosso horário de atendimento se encerrou (seg–sex 08:00–18:00, sáb 08:00–16:00). Atenderemos assim que possível.\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.",
+        "Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n⏰ Horário de atendimento\n\n🗓️ Segunda a sexta: 08h às 18h30\n🗓️ Sábado: 08h às 16h30\n\nEnquanto isso, dê uma olhada no nosso catálogo e conheça as novidades da Calangus.",
       menuEnabled: true,
       options: [],
     },

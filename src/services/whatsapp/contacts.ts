@@ -30,6 +30,46 @@ export function hasSavedContact(c: { savedName?: string | null }): boolean {
   return Boolean(c.savedName?.trim());
 }
 
+export function formatFirstName(full: string): string {
+  const part = full.trim().split(/\s+/).find(Boolean) ?? full.trim();
+  if (!part) return full.trim();
+  return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+}
+
+function phoneLookupVariants(phone: string): string[] {
+  const digits = phone.replace(/\D/g, "");
+  const variants = new Set<string>();
+  if (digits) variants.add(digits);
+  if (digits.startsWith("55") && digits.length === 13 && digits[4] === "9") {
+    variants.add(`${digits.slice(0, 4)}${digits.slice(5)}`);
+  }
+  if (digits.startsWith("55") && digits.length === 12) {
+    variants.add(`${digits.slice(0, 4)}9${digits.slice(4)}`);
+  }
+  return [...variants];
+}
+
+/** Nome para saudação: cadastro CRM (savedName) ou cliente no crediário (boleto). */
+export async function resolveRegisteredGreetingName(
+  contact: ContactNameFields
+): Promise<string | null> {
+  const saved = contact.savedName?.trim();
+  if (saved) return formatFirstName(saved);
+
+  const variants = phoneLookupVariants(contact.phone);
+  if (!variants.length) return null;
+
+  const boleto = await prisma.boleto.findFirst({
+    where: { clienteTelefone: { in: variants } },
+    orderBy: { collectedAt: "desc" },
+    select: { clienteNome: true },
+  });
+  const crediario = boleto?.clienteNome?.trim();
+  if (crediario) return formatFirstName(crediario);
+
+  return null;
+}
+
 export function serializeContact<T extends ContactNameFields>(c: T) {
   return {
     ...c,

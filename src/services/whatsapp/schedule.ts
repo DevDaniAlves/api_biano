@@ -7,18 +7,26 @@ export const BUSINESS = {
   /** JS day 0=dom … 6=sáb → [início, fim] em minutos do dia; null = fechado */
   hours: {
     0: null,
-    1: [8 * 60, 18 * 60],
-    2: [8 * 60, 18 * 60],
-    3: [8 * 60, 18 * 60],
-    4: [8 * 60, 18 * 60],
-    5: [8 * 60, 18 * 60],
-    6: [8 * 60, 16 * 60],
+    1: [8 * 60, 18 * 60 + 30],
+    2: [8 * 60, 18 * 60 + 30],
+    3: [8 * 60, 18 * 60 + 30],
+    4: [8 * 60, 18 * 60 + 30],
+    5: [8 * 60, 18 * 60 + 30],
+    6: [8 * 60, 16 * 60 + 30],
   } as Record<number, [number, number] | null>,
   offerMinutes: 10,
 };
 
 export function businessHoursLabel(): string {
-  return "seg–sex 08:00–18:00, sáb 08:00–16:00";
+  return "seg–sex 08:00–18:30, sáb 08:00–16:30";
+}
+
+export function businessHoursBlock(): string {
+  return (
+    "⏰ Horário de atendimento\n\n" +
+    "🗓️ Segunda a sexta: 08h às 18h30\n" +
+    "🗓️ Sábado: 08h às 16h30"
+  );
 }
 
 export function nowInSaoPaulo(): Date {
