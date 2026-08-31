@@ -218,7 +218,12 @@ export function waTitle(s: string, max = 20) {
 export function buildAccessInteractiveMessage(interactive: Record<string, unknown>): string {
   const type = str(interactive.type).toLowerCase();
   const bodyObj = isObj(interactive.body) ? interactive.body : {};
-  const bodyText = str(bodyObj.text);
+  let bodyText = str(bodyObj.text);
+  const footerObj = isObj(interactive.footer) ? interactive.footer : {};
+  const footerText = str(footerObj.text);
+  if (footerText) {
+    bodyText = `${bodyText}\n\n${footerText}`;
+  }
   const action = isObj(interactive.action) ? interactive.action : {};
 
   if (type === "list") {

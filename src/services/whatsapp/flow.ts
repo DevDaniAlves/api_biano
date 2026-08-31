@@ -55,6 +55,9 @@ const DEFAULT_OPTIONS: FlowOption[] = [
 
 const BACK_HINT = "Digite *0* — Voltar ao menu";
 
+const DEPT_FOOTER_TEXT = "Estamos à disposição para atender você!";
+
+/** Só para fallback em texto (sem botões oficiais). */
 const DEPT_OPTIONS_TEXT =
   "1 — Atendimento\n2 — Financeiro\n3 — Catálogo de produtos";
 
@@ -66,12 +69,11 @@ export async function buildDepartmentWelcomeBody(
     ? `Olá, ${name}! Bem-vindo(a) à CALANGUS MODA JOVEM!`
     : "Olá! Bem-vindo(a) à CALANGUS MODA JOVEM!";
 
-  return (
-    `${greeting}\n\n` +
-    "Para ser atendido, escolha uma das opções abaixo:\n\n" +
-    `${DEPT_OPTIONS_TEXT}\n\n` +
-    "Estamos à disposição para atender você!"
-  );
+  return `${greeting}\n\nPara ser atendido, escolha uma das opções abaixo:`;
+}
+
+function buildDepartmentTextFallback(body: string): string {
+  return `${body}\n\n${DEPT_OPTIONS_TEXT}\n\n${DEPT_FOOTER_TEXT}`;
 }
 
 export type BotFlowKind = "atendimento" | "financeiro";
@@ -333,14 +335,16 @@ async function botSend(
 async function botSendInteractive(
   contact: { id?: string; phone: string; remoteJid?: string | null; webhookPaused?: boolean },
   preview: string,
-  interactive: Record<string, unknown>
+  interactive: Record<string, unknown>,
+  textFallback?: string
 ): Promise<string | null> {
   if (contact.webhookPaused) {
     console.warn("[bot] webhook pausado, skip send:", contact.phone);
     return null;
   }
+  const fallbackText = textFallback ?? preview;
   if (!(await messagingEnabled()) || !(await canUseOfficialButtons())) {
-    return botSend(contact, preview);
+    return botSend(contact, fallbackText);
   }
 
   const wait = botDelayMs();
@@ -367,7 +371,7 @@ async function botSendInteractive(
   });
   if (!r.ok) {
     console.error("[bot] falha interactive, fallback texto", r.error);
-    return botSend(contact, preview);
+    return botSend(contact, fallbackText);
   }
   console.log("[bot] enviado interactive:", preview.replace(/\s+/g, " ").slice(0, 80));
   return r.externalId;
@@ -544,7 +548,7 @@ export async function sendDepartmentMenu(
     where: { id: contactId },
   });
   const body = bodyText ?? await buildDepartmentWelcomeBody(contact);
-  const preview = body;
+  const preview = `${body}\n\n${DEPT_FOOTER_TEXT}`;
   const recentMenu = await prisma.whatsAppMessage.findFirst({
     where: {
       contactId,
@@ -565,6 +569,7 @@ export async function sendDepartmentMenu(
   const interactive = {
     type: "button",
     body: { text: body },
+    footer: { text: DEPT_FOOTER_TEXT },
     action: {
       buttons: [
         { type: "reply", reply: { id: "1", title: "Atendimento" } },
@@ -573,7 +578,12 @@ export async function sendDepartmentMenu(
       ],
     },
   };
-  const externalId = await botSendInteractive(contact, preview, interactive);
+  const externalId = await botSendInteractive(
+    contact,
+    preview,
+    interactive,
+    buildDepartmentTextFallback(body)
+  );
   await persistIfSent(
     contactId,
     preview,
