@@ -7,6 +7,23 @@ export const productInclude = {
 
 export type ProductWithImages = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
 
+/** Aceita número ou texto pt-BR (49,90 / R$ 1.234,56). */
+export function parseCatalogPrice(raw: unknown): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw >= 0 ? raw : NaN;
+
+  const cleaned = String(raw ?? "")
+    .replace(/[R$\s]/gi, "")
+    .trim();
+  if (!cleaned) return NaN;
+
+  const normalized = cleaned.includes(",")
+    ? cleaned.replace(/\./g, "").replace(",", ".")
+    : cleaned;
+
+  const value = Number(normalized);
+  return Number.isFinite(value) && value >= 0 ? value : NaN;
+}
+
 export function serializeProduct(p: ProductWithImages, opts?: { admin?: boolean }) {
   const images = p.images.map((i) => i.imageUrl);
   const cover = images[0] ?? p.imageUrl ?? null;

@@ -11,6 +11,7 @@ import {
 } from "../services/auth.js";
 import {
   ensureCatalogSettings,
+  parseCatalogPrice,
   productInclude,
   serializeProduct,
   syncProductCover,
@@ -141,11 +142,16 @@ catalogRouter.get("/admin/products", authRequired, catalogManageRequired, async 
 
 catalogRouter.post("/admin/products", authRequired, catalogManageRequired, async (req, res) => {
   try {
+    const price = parseCatalogPrice(req.body?.price);
+    if (!Number.isFinite(price)) {
+      res.status(400).json({ error: "Informe um preço válido (ex.: 49,90)" });
+      return;
+    }
     const product = await prisma.product.create({
       data: {
         name: String(req.body?.name ?? "").trim(),
         description: req.body?.description ? String(req.body.description) : null,
-        price: Number(req.body?.price ?? 0),
+        price,
         imageUrl: req.body?.imageUrl ? String(req.body.imageUrl) : null,
         active: req.body?.active !== false,
         sortOrder: Number(req.body?.sortOrder ?? 0),
@@ -160,6 +166,15 @@ catalogRouter.post("/admin/products", authRequired, catalogManageRequired, async
 
 catalogRouter.put("/admin/products/:id", authRequired, catalogManageRequired, async (req, res) => {
   try {
+    let priceUpdate: number | undefined;
+    if (req.body?.price != null) {
+      const price = parseCatalogPrice(req.body.price);
+      if (!Number.isFinite(price)) {
+        res.status(400).json({ error: "Informe um preço válido (ex.: 49,90)" });
+        return;
+      }
+      priceUpdate = price;
+    }
     const product = await prisma.product.update({
       where: { id: String(req.params.id) },
       data: {
@@ -167,7 +182,7 @@ catalogRouter.put("/admin/products/:id", authRequired, catalogManageRequired, as
         ...(req.body?.description !== undefined
           ? { description: req.body.description ? String(req.body.description) : null }
           : {}),
-        ...(req.body?.price != null ? { price: Number(req.body.price) } : {}),
+        ...(priceUpdate != null ? { price: priceUpdate } : {}),
         ...(req.body?.imageUrl !== undefined
           ? { imageUrl: req.body.imageUrl ? String(req.body.imageUrl) : null }
           : {}),
