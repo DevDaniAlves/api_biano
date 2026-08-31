@@ -313,6 +313,52 @@ catalogRouter.delete(
   }
 );
 
+/** Substitui arquivo de uma foto (recorte 1:1). */
+catalogRouter.put(
+  "/admin/products/:productId/images/:imageId",
+  authRequired,
+  catalogManageRequired,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const productId = String(req.params.productId);
+      const imageId = String(req.params.imageId);
+      const row = await prisma.productImage.findFirst({
+        where: { id: imageId, productId },
+      });
+      if (!row) {
+        res.status(404).json({ error: "Foto não encontrada" });
+        return;
+      }
+      const file = req.file as Express.Multer.File | undefined;
+      if (!file) {
+        res.status(400).json({ error: "Envie a imagem recortada" });
+        return;
+      }
+
+      const oldPath = row.imageUrl.startsWith("/uploads/")
+        ? path.join(UPLOADS_DIR, path.basename(row.imageUrl))
+        : null;
+      if (oldPath && fs.existsSync(oldPath)) {
+        fs.unlinkSync(oldPath);
+      }
+
+      await prisma.productImage.update({
+        where: { id: imageId },
+        data: { imageUrl: `/uploads/${file.filename}` },
+      });
+      await syncProductCover(productId);
+      const updated = await prisma.product.findUniqueOrThrow({
+        where: { id: productId },
+        include: productInclude,
+      });
+      res.json(serializeProduct(updated, { admin: true }));
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+);
+
 const galleryInclude = {
   submittedBy: { select: { id: true, name: true } },
   reviewedBy: { select: { id: true, name: true } },
