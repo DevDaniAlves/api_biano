@@ -56,6 +56,7 @@ const DEFAULT_OPTIONS: FlowOption[] = [
 const BACK_HINT = "Digite *0* — Voltar ao menu";
 
 const DEPT_FOOTER_TEXT = "Estamos à disposição para atender você!";
+const BRAND_NAME = "*CALANGUS MODA JOVEM*";
 
 /** Só para fallback em texto (sem botões oficiais). */
 const DEPT_OPTIONS_TEXT =
@@ -66,8 +67,8 @@ export async function buildDepartmentWelcomeBody(
 ): Promise<string> {
   const name = await resolveRegisteredGreetingName(contact);
   const greeting = name
-    ? `Olá, ${name}! Bem-vindo(a) à CALANGUS MODA JOVEM!`
-    : "Olá! Bem-vindo(a) à CALANGUS MODA JOVEM!";
+    ? `Olá, ${name}! Bem-vindo(a) à ${BRAND_NAME}!`
+    : `Olá! Bem-vindo(a) à ${BRAND_NAME}!`;
 
   return `${greeting}\n\nPara ser atendido, escolha uma das opções abaixo:`;
 }
@@ -569,7 +570,6 @@ export async function sendDepartmentMenu(
   const interactive = {
     type: "button",
     body: { text: body },
-    footer: { text: DEPT_FOOTER_TEXT },
     action: {
       buttons: [
         { type: "reply", reply: { id: "1", title: "Atendimento" } },
@@ -578,12 +578,16 @@ export async function sendDepartmentMenu(
       ],
     },
   };
+  const usedButtons = (await messagingEnabled()) && (await canUseOfficialButtons());
   const externalId = await botSendInteractive(
     contact,
     preview,
     interactive,
     buildDepartmentTextFallback(body)
   );
+  if (usedButtons && externalId) {
+    await botSend(contact, DEPT_FOOTER_TEXT);
+  }
   await persistIfSent(
     contactId,
     preview,
