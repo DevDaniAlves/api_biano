@@ -92,7 +92,9 @@ const RATING_MSG =
 const INACTIVITY_RECOVERY_MSG = "Olá! Você ainda está por aí? 😊";
 
 const INACTIVITY_CLOSE_MSG =
-  "Como não recebemos retorno, vamos encerrar este atendimento por enquanto.\n\nQuando quiser falar conosco de novo, é só enviar uma mensagem. Até logo! 👋";
+  "Imagino que esteja sem tempo agora.\n" +
+  "Preciso finalizar a nossa conversa. Mas não se preocupe! Para retornar o atendimento, basta enviar um *Oi* e escolher as opções desejadas.\n" +
+  "Até logo! 😊";
 
 /** @deprecated use INACTIVITY_RECOVERY_MSG */
 const INACTIVITY_MSG = INACTIVITY_RECOVERY_MSG;
@@ -1326,6 +1328,85 @@ export async function resolveContact(contactId: string) {
   });
 }
 
+function inactivityCloseData() {
+  return {
+    status: "closed" as const,
+    botMenuStep: "department" as const,
+    botFlow: null,
+    assignedToId: null,
+    assignedAt: null,
+    assumeWaitSeconds: null,
+    offeredToId: null,
+    offeredAt: null,
+    firstOfferedAt: null,
+    firstOfferedToId: null,
+    openedToAllAt: null,
+    openToAll: false,
+    queueId: null,
+    inactivityWarnedAt: null,
+    sellerInactivityNotifiedAt: null,
+    rating: null,
+    ratingAskedAt: null,
+    unreadCount: 0,
+  };
+}
+
+/** Encerra por inatividade do cliente — sem pedir avaliação. */
+export async function resolveContactForInactivity(contactId: string) {
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
+    where: { id: contactId },
+  });
+  if (contact.webhookPaused) {
+    throw new Error("Cliente em atendimento manual — volte ao webhook antes de finalizar");
+  }
+  if (contact.status === "closed") {
+    return contact;
+  }
+  if (contact.status !== "human") {
+    throw new Error("Só é possível encerrar por inatividade durante o atendimento humano");
+  }
+
+  let externalId: string | null = null;
+  if (await messagingEnabled()) {
+    const r = await sendOutbound({
+      to: contact.remoteJid || contact.phone,
+      source: "system",
+      contactId,
+      kind: "text",
+      text: INACTIVITY_CLOSE_MSG,
+      category: "service",
+    });
+    if (!r.ok) throw new Error(`Falha WhatsApp: ${r.error}`);
+    externalId = r.externalId;
+  }
+
+  await upsertOutboundMessage({
+    contactId,
+    type: "text",
+    body: INACTIVITY_CLOSE_MSG,
+    externalId,
+  });
+
+  const claimed = await prisma.whatsAppContact.updateMany({
+    where: {
+      id: contactId,
+      webhookPaused: false,
+      status: "human",
+    },
+    data: {
+      ...inactivityCloseData(),
+      lastMessageAt: new Date(),
+      lastMessagePreview: INACTIVITY_CLOSE_MSG.slice(0, 120),
+      lastMessageDirection: "out" as const,
+    },
+  });
+  if (claimed.count === 0) {
+    return prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  }
+
+  return prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+}
+
 /** Aviso de inatividade manual (vendedor). */
 export async function warnInactivity(contactId: string, userId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
@@ -1437,8 +1518,7 @@ export async function autoResolveInactivity(contactId: string) {
   if (!flags.canResolveInactivity) return false;
   if (!(await messagingEnabled())) return false;
 
-  await sendSystemText(contactId, INACTIVITY_CLOSE_MSG);
-  await resolveContact(contactId);
+  await resolveContactForInactivity(contactId);
   console.log(`[idle] encerramento ${env.INACTIVITY_RESOLVE_MINUTES}min → ${contact.phone}`);
   return true;
 }

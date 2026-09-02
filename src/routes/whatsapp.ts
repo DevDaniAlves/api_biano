@@ -45,6 +45,7 @@ import {
   saveContactName,
   listMessages,
   resolveContact,
+  resolveContactForInactivity,
   seedDemoReports,
   sendImageMessage,
   sendImageMessagesConcurrent,
@@ -1084,6 +1085,11 @@ whatsappRouter.post("/messages/image", upload.single("file"), async (req, res) =
     }
     const publicUrl = `/uploads/${req.file.filename}`;
     const clientKey = String(req.body?.clientKey ?? "").trim() || undefined;
+    const kind = mediaKind(req.file.mimetype);
+    if (kind === "video" && req.file.size > 16 * 1024 * 1024) {
+      res.status(400).json({ error: "Vídeo acima de 16 MB (limite WhatsApp)" });
+      return;
+    }
     const msg = await sendImageMessage({
       contactId,
       userId: req.user!.id,
@@ -1254,6 +1260,14 @@ whatsappRouter.post("/contacts/resolve", async (req, res) => {
     res.json(await resolveContact(String(req.body?.contactId ?? "")));
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/contacts/resolve-inactivity", async (req, res) => {
+  try {
+    res.json(await resolveContactForInactivity(String(req.body?.contactId ?? "")));
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
