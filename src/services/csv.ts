@@ -172,10 +172,8 @@ export function extratoFilterMode(now?: Date): "hoje" | "periodo" {
   return saoPauloNow(now).getDay() === 1 ? "periodo" : "hoje";
 }
 
-export function buildExtratoApiFilter(now?: Date): ExtratoApiFilter {
-  const sp = saoPauloNow(now);
-  const hoje = todayYmd(sp);
-  const base: ExtratoApiFilter = {
+function extratoApiFilterBase(): ExtratoApiFilter {
+  return {
     arLojas: null,
     arRiscosSelecionados: [],
     arPlanosSemEntradaSelecionados: [],
@@ -187,22 +185,38 @@ export function buildExtratoApiFilter(now?: Date): ExtratoApiFilter {
     dataVencimentoi: null,
     dataVencimentof: null,
   };
+}
+
+/** Um filtro (ter–sex). Na segunda use buildExtratoApiFiltersForScrape. */
+export function buildExtratoApiFilter(now?: Date): ExtratoApiFilter {
+  return buildExtratoApiFiltersForScrape(now)[0]!;
+}
+
+/**
+ * Segunda: 3 chamadas diasVencimento (-2 sáb, -1 dom, 0 seg).
+ * O filtro "Informar período" (dataVencimentoi/f) não traz vencimentos de domingo.
+ */
+export function buildExtratoApiFiltersForScrape(now?: Date): ExtratoApiFilter[] {
+  const sp = saoPauloNow(now);
+  const base = extratoApiFilterBase();
 
   if (sp.getDay() === 1) {
-    return {
+    return [-2, -1, 0].map((diasVencimento) => ({
       ...base,
-      diasVencimento: null,
-      dataVencimentoi: toBrDate(addDaysYmd(hoje, -2)),
-      dataVencimentof: toBrDate(hoje),
-    };
+      diasVencimento,
+      dataVencimentoi: null,
+      dataVencimentof: null,
+    }));
   }
 
-  return {
-    ...base,
-    diasVencimento: 0,
-    dataVencimentoi: null,
-    dataVencimentof: null,
-  };
+  return [
+    {
+      ...base,
+      diasVencimento: 0,
+      dataVencimentoi: null,
+      dataVencimentof: null,
+    },
+  ];
 }
 
 export function extratoFilterLabel(now?: Date): string {

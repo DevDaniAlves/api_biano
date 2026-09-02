@@ -6,7 +6,7 @@ import { env } from "../config.js";
 import {
   type CsvBoletoRow,
   type ExtratoApiFilter,
-  buildExtratoApiFilter,
+  buildExtratoApiFiltersForScrape,
   extratoFilterLabel,
   normalizePhone,
   parseMoney,
@@ -44,7 +44,7 @@ export interface ScrapeApiResult {
 
 /**
  * Login (Playwright) → page.request (cookies da sessão) → findAll.
- * Ter–sex: filtro "Hoje" (diasVencimento=0). Segunda: "Informar período" (sáb–seg).
+ * Ter–sex: filtro "Hoje" (diasVencimento=0). Segunda: diasVencimento -2, -1 e 0 (sáb–seg).
  */
 export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
   if (!env.CREDIARIO_USER || !env.CREDIARIO_PASSWORD) {
@@ -63,19 +63,34 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
   });
   const page = await context.newPage();
 
-  const filter = buildExtratoApiFilter(nowInSaoPaulo());
-  const filterLabel = extratoFilterLabel(nowInSaoPaulo());
+  const now = nowInSaoPaulo();
+  const filters = buildExtratoApiFiltersForScrape(now);
+  const filterLabel = extratoFilterLabel(now);
 
   try {
     await login(page);
     await page.screenshot({ path: path.join(screenshotsDir, "01-login.png"), fullPage: true });
 
     await openReportPage(page);
-    await assertGestaoSession(page, filter);
+    await assertGestaoSession(page, filters[0]!);
 
-    const sumario = await callGestaoApi(page, "findAllSumario", filter);
-    const { items, findAllSample, findAllTopKeys } = await fetchAllParcelas(page, filter);
+    const sumarios: unknown[] = [];
+    let items: Record<string, unknown>[] = [];
+    let findAllSample: unknown = null;
+    let findAllTopKeys: string[] = [];
 
+    for (const filter of filters) {
+      const sumario = await callGestaoApi(page, "findAllSumario", filter);
+      sumarios.push(sumario);
+      const batch = await fetchAllParcelas(page, filter);
+      if (findAllSample == null) {
+        findAllSample = batch.findAllSample;
+        findAllTopKeys = batch.findAllTopKeys;
+      }
+      items = mergeParcelaItems(items, batch.items);
+    }
+
+    const sumario = sumarios.length === 1 ? sumarios[0] : { sumarios };
     const rows = flattenAndMap(items);
 
     const rawPath = path.join(tmpDir, `api-extrato-${Date.now()}.json`);
@@ -84,7 +99,7 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
       JSON.stringify(
         {
           filter: filterLabel,
-          filterParams: filter,
+          filterParams: filters,
           sumario,
           findAllTopKeys,
           findAllSample,
@@ -250,6 +265,21 @@ function parcelaDedupeKey(item: Record<string, unknown>): string {
   const row = mapApiItem(item);
   if (row) return row.externalId;
   return JSON.stringify(item).slice(0, 240);
+}
+
+function mergeParcelaItems(
+  existing: Record<string, unknown>[],
+  incoming: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const seen = new Set(existing.map((item) => parcelaDedupeKey(item)));
+  const merged = [...existing];
+  for (const item of incoming) {
+    const key = parcelaDedupeKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
 }
 
 /** Chamada autenticada com cookies da sessão Playwright. */
@@ -600,6 +630,9 @@ function nullableMoney(raw: string): number | null {
 export function sumarioQtdTotal(sumario: unknown): number {
   if (!sumario || typeof sumario !== "object") return 0;
   const root = sumario as Record<string, unknown>;
+  if (Array.isArray(root.sumarios)) {
+    return root.sumarios.reduce((acc, item) => acc + sumarioQtdTotal(item), 0);
+  }
   const inner =
     root.sumario && typeof root.sumario === "object"
       ? (root.sumario as Record<string, unknown>)
