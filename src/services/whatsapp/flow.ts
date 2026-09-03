@@ -615,8 +615,8 @@ async function enqueueOpenToTeam(contactId: string, flow: BotFlowKind) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
   const msg =
     flow === "financeiro"
-      ? `${financeSelfServiceMessage()}\n\nCaso ainda tenha dúvidas, em breve um de nossos atendentes do financeiro irá te responder.`
-      : "Certo! Em breve um de nossos vendedores irá te atender. 😊\n\nMe conta como podemos te ajudar?";
+      ? `${financeSelfServiceMessage()}\n\nCaso ainda tenha dúvidas, em breve um de nossos atendentes irá te responder.`
+      : "Perfeito! Encaminhamos você para o atendimento. Em breve um vendedor irá te responder.";
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
 }
@@ -1112,8 +1112,8 @@ export async function handleMenuChoice(contactId: string, raw: string) {
   });
   const msg =
     flow === "financeiro"
-      ? "Certo! Em breve um de nossos atendentes do financeiro irá te responder."
-      : "Certo! Em breve um de nossos vendedores irá te atender. 😊\n\nMe conta como podemos te ajudar?";
+      ? "Perfeito! Encaminhamos você para o atendimento financeiro. Em breve um atendente irá te responder."
+      : "Perfeito! Encaminhamos você para o atendimento. Em breve um vendedor irá te responder.";
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
 }
