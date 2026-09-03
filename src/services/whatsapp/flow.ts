@@ -557,6 +557,7 @@ export async function sendDepartmentMenu(
   const interactive = {
     type: "button",
     body: { text: body },
+    footer: { text: DEPT_FOOTER_TEXT },
     action: {
       buttons: [
         { type: "reply", reply: { id: "1", title: "Atendimento" } },
@@ -565,16 +566,12 @@ export async function sendDepartmentMenu(
       ],
     },
   };
-  const usedButtons = (await messagingEnabled()) && (await canUseOfficialButtons());
   const externalId = await botSendInteractive(
     contact,
     preview,
     interactive,
     buildDepartmentTextFallback(body)
   );
-  if (usedButtons && externalId) {
-    await botSend(contact, DEPT_FOOTER_TEXT);
-  }
   await persistIfSent(
     contactId,
     preview,
@@ -616,11 +613,10 @@ async function enqueueOpenToTeam(contactId: string, flow: BotFlowKind) {
   });
 
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
-  const teamLabel = flow === "financeiro" ? "equipe financeira" : "equipe";
   const msg =
     flow === "financeiro"
-      ? `${financeSelfServiceMessage()}\n\nCaso ainda tenha dúvidas, sua conversa já está disponível para nossa *${teamLabel}*. *Quem responder primeiro* irá te atender.`
-      : `Certo! Sua conversa está disponível para nossa *${teamLabel}*. *Quem responder primeiro* irá te atender.\n\nMe conta como podemos te ajudar?`;
+      ? `${financeSelfServiceMessage()}\n\nCaso ainda tenha dúvidas, em breve um de nossos atendentes do financeiro irá te responder.`
+      : "Certo! Em breve um de nossos vendedores irá te atender. 😊\n\nMe conta como podemos te ajudar?";
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
 }
@@ -1114,8 +1110,10 @@ export async function handleMenuChoice(contactId: string, raw: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const teamLabel = flow === "financeiro" ? "equipe financeira" : "equipe";
-  const msg = `Certo! Sua conversa está disponível para nossa ${teamLabel}. *Quem responder primeiro* irá te atender.`;
+  const msg =
+    flow === "financeiro"
+      ? "Certo! Em breve um de nossos atendentes do financeiro irá te responder."
+      : "Certo! Em breve um de nossos vendedores irá te atender. 😊\n\nMe conta como podemos te ajudar?";
   const externalId = await botSend(contact, msg);
   await persistIfSent(contactId, msg, undefined, externalId);
 }
