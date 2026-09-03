@@ -603,6 +603,28 @@ async function enqueueAfterHoursAtendimento(contactId: string) {
   });
 }
 
+/** Fila aberta: sem escolher atendente — quem responder primeiro assume. */
+async function enqueueOpenToTeam(contactId: string, flow: BotFlowKind) {
+  const existing = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  if (existing.status === "waiting" && existing.openToAll) return;
+
+  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+  await openContactToAllSellers({
+    contactId,
+    queueId: queue?.id ?? null,
+    flow,
+  });
+
+  const contact = await prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  const teamLabel = flow === "financeiro" ? "equipe financeira" : "equipe";
+  const msg =
+    flow === "financeiro"
+      ? `${financeSelfServiceMessage()}\n\nCaso ainda tenha dúvidas, sua conversa já está disponível para nossa *${teamLabel}*. *Quem responder primeiro* irá te atender.`
+      : `Certo! Sua conversa está disponível para nossa *${teamLabel}*. *Quem responder primeiro* irá te atender.\n\nMe conta como podemos te ajudar?`;
+  const externalId = await botSend(contact, msg);
+  await persistIfSent(contactId, msg, undefined, externalId);
+}
+
 async function handleCatalogChoice(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
@@ -955,7 +977,8 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
       await handleAfterHoursAtendimento(contactId);
       return;
     }
-    await sendSellersMenu(contactId, "atendimento");
+    // Sem lista de vendedores: fila aberta para todos.
+    await enqueueOpenToTeam(contactId, "atendimento");
     return;
   }
 
@@ -963,7 +986,8 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     await handleAfterHoursFinanceiro(contactId);
     return;
   }
-  await sendFinanceMenu(contactId);
+  // Financeiro: crediário + fila aberta (sem escolher atendente).
+  await enqueueOpenToTeam(contactId, "financeiro");
 }
 
 async function resolveAgentUserId(
@@ -1272,13 +1296,9 @@ export async function processInboundBot(contactId: string, body: string | null, 
 
     if (shouldIgnoreEchoDigit(contactId, body)) return;
 
-    // Catálogo: keyword pula departamento → menu vendedores (Atendimento)
+    // Catálogo: keyword → fila aberta Atendimento (sem escolher vendedor)
     if ((isNew || contact.status === "closed" || contact.status === "bot") && isCatalogKeyword(body)) {
-      await prisma.whatsAppContact.update({
-        where: { id: contactId },
-        data: { botFlow: "atendimento", botMenuStep: "sellers" },
-      });
-      await sendSellersMenu(contactId, "atendimento");
+      await enqueueOpenToTeam(contactId, "atendimento");
       return;
     }
 
@@ -1314,13 +1334,22 @@ export async function processInboundBot(contactId: string, body: string | null, 
           await handleFinanceAfterHoursConfirm(contactId, body);
           return;
         }
+        // Legado: ainda no menu de vendedores → fila aberta
         if (contact.botMenuStep === "sellers" || contact.botMenuStep === "finance_sellers") {
-          await handleMenuChoice(contactId, body);
+          const flow =
+            contact.botMenuStep === "finance_sellers" || contact.botFlow === "financeiro"
+              ? "financeiro"
+              : "atendimento";
+          await enqueueOpenToTeam(contactId, flow);
           return;
         }
       }
       if (contact.botMenuStep === "sellers" || contact.botMenuStep === "finance_sellers") {
-        await resendSellerMenu(contactId);
+        const flow =
+          contact.botMenuStep === "finance_sellers" || contact.botFlow === "financeiro"
+            ? "financeiro"
+            : "atendimento";
+        await enqueueOpenToTeam(contactId, flow);
       } else if (contact.botMenuStep === "finance_after_hours") {
         await handleAfterHoursFinanceiro(contactId);
       } else {

@@ -1269,13 +1269,17 @@ export async function assignContact(opts: {
   return updated;
 }
 
-/** Finaliza atendimento e pede avaliação (1–5). */
+/** Finaliza atendimento e pede avaliação (1–5). Nunca usar após aviso de inatividade. */
 export async function resolveContact(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
   if (contact.webhookPaused) {
     throw new Error("Cliente em atendimento manual — volte ao webhook antes de finalizar");
+  }
+  // Segurança: fluxo de inatividade nunca pede nota (evita bug legado autoResolve → resolveContact).
+  if (contact.inactivityWarnedAt && contact.status === "human") {
+    return resolveContactForInactivity(contactId);
   }
   if (contact.status === "awaiting_rating" || contact.status === "closed") {
     return contact;
