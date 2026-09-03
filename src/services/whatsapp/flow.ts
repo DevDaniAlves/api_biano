@@ -125,9 +125,9 @@ function financeSelfServiceMessage() {
 }
 
 export async function ensureFlow() {
+  // closedMessage no banco é legado; a mensagem real é montada em buildOutsideHoursMessage().
   const closedDefault =
-    "Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n" +
-    `${businessHoursBlock()}`;
+    "Nosso time de venda não está em horário de atendimento, mas podemos lhe retornar no primeiro horário útil.";
   const row = await prisma.whatsAppFlow.upsert({
     where: { id: "default" },
     update: {},
@@ -137,19 +137,6 @@ export async function ensureFlow() {
       options: DEFAULT_OPTIONS as unknown as Prisma.InputJsonValue,
     },
   });
-  if (
-    row.closedMessage.includes("seg–sex, 08:00–18:00") ||
-    row.closedMessage.includes("seg-sex, 08:00-18:00") ||
-    (row.closedMessage.includes("08:00–18:00") && !row.closedMessage.includes("18:30")) ||
-    (row.closedMessage.includes("08:00-18:00") && !row.closedMessage.includes("18:30")) ||
-    !row.closedMessage.includes("⏰ Horário de atendimento") ||
-    row.closedMessage.includes("Enquanto isso, dê uma olhada no nosso catálogo")
-  ) {
-    return prisma.whatsAppFlow.update({
-      where: { id: "default" },
-      data: { closedMessage: closedDefault },
-    });
-  }
   return row;
 }
 
@@ -1109,29 +1096,22 @@ export async function handleMenuChoice(contactId: string, raw: string) {
   await persistIfSent(contactId, msg, undefined, externalId);
 }
 
-/** Fora do horário: avisa, sugere o catálogo e confirma fila. */
-export function buildOutsideHoursMessage(closedMessage: string) {
-  const url = (env.CATALOG_PUBLIC_URL || "").replace(/\/+$/, "").trim();
-  let base = closedMessage.trim();
+/** Fora do horário: avisa, sugere o catálogo e já entra na fila. */
+export function buildOutsideHoursMessage(clienteName?: string) {
+  const nome = clienteName?.trim().split(/\s+/)[0] || "";
+  const saudacao = nome
+    ? `Olá, ${nome.charAt(0).toUpperCase() + nome.slice(1).toLowerCase()}!`
+    : "Olá!";
 
-  // Remove texto legado de catálogo embutido no closedMessage (evita duplicar).
-  if (base.includes("Enquanto isso, dê uma olhada no nosso catálogo")) {
-    base = base.replace(/\n\nEnquanto isso, dê uma olhada no nosso catálogo[\s\S]*$/i, "").trim();
-  }
+  const catalogUrl = "https://calangusmodajovem.com.br";
 
-  const parts = [base];
-
-  if (url && !base.includes(url)) {
-    parts.push(`📦 Enquanto isso, confira nosso catálogo:\n${url}`);
-  }
-
-  parts.push(
-    "Me conta o que você está buscando?\n\n" +
-      "Assim que um vendedor estiver disponível, iremos te atender.\n\n" +
-      BACK_HINT
+  return (
+    `${saudacao} Nosso time de venda não está em horário de atendimento, mas podemos lhe retornar no primeiro horário útil.\n\n` +
+    `📦 Enquanto isso, confira nosso catálogo:\n${catalogUrl}\n\n` +
+    `${businessHoursBlock()}\n\n` +
+    "Me conta o que você está buscando? Assim que um vendedor estiver disponível, iremos te atender.\n\n" +
+    BACK_HINT
   );
-
-  return parts.join("\n\n");
 }
 
 function financeAfterHoursMessage() {
@@ -1144,24 +1124,23 @@ function financeAfterHoursMessage() {
   );
 }
 
-/** Fora do horário + Atendimento: avisa e aguarda resposta antes de entrar na fila. */
+/** Fora do horário + Atendimento: avisa, entra na fila e fica pendente para todos. */
 export async function handleAfterHoursAtendimento(contactId: string) {
-  const flow = await getFlow();
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  const msg = buildOutsideHoursMessage(flow.closedMessage);
+  const msg = buildOutsideHoursMessage(contact.savedName ?? contact.pushName ?? undefined);
   const externalId = await botSend(contact, msg);
-  await persistIfSent(
+
+  // Já coloca na fila aberta para todos os vendedores (sem precisar de "1")
+  const queue = await prisma.whatsAppQueue.findFirst({ orderBy: { createdAt: "asc" } });
+  await openContactToAllSellers({
     contactId,
-    msg,
-    {
-      status: "bot",
-      botMenuStep: "after_hours_atendimento",
-      botFlow: "atendimento",
-    },
-    externalId
-  );
+    queueId: queue?.id ?? null,
+    flow: "atendimento",
+  });
+
+  await persistIfSent(contactId, msg, undefined, externalId);
 }
 
 /** Fora do horário + Financeiro: crediário + digite 1 (ainda no bot). */
