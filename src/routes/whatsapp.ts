@@ -1192,26 +1192,43 @@ whatsappRouter.post("/messages/product-outreach", upload.single("file"), async (
 
 whatsappRouter.post("/contacts/assign", async (req, res) => {
   try {
-    const canTransfer =
-      req.user?.role === "admin" ||
-      (await userCanSeeAllMessages(req.user!.id, req.user!.role));
-    if (!canTransfer) {
-      res.status(403).json({ error: "Sem permissão para transferir conversas" });
-      return;
-    }
     const contactId = String(req.body?.contactId ?? "");
     if (!contactId) {
       res.status(400).json({ error: "contactId obrigatório" });
       return;
     }
+
+    const existing = await prisma.whatsAppContact.findUnique({
+      where: { id: contactId },
+      select: { assignedToId: true },
+    });
+    if (!existing) {
+      res.status(404).json({ error: "Contato não encontrado" });
+      return;
+    }
+
+    const canTransfer =
+      req.user?.role === "admin" ||
+      (await userCanSeeAllMessages(req.user!.id, req.user!.role)) ||
+      existing.assignedToId === req.user!.id;
+    if (!canTransfer) {
+      res.status(403).json({ error: "Sem permissão para transferir conversas" });
+      return;
+    }
+
     const userId =
       req.body?.userId === undefined || req.body?.userId === null || req.body?.userId === ""
         ? req.user!.id
         : String(req.body.userId);
+    const flowRaw = typeof req.body?.flow === "string" ? req.body.flow.trim() : "";
+    const botFlow =
+      flowRaw === "financeiro" || flowRaw === "atendimento" ? flowRaw : undefined;
+
     const contact = await assignContact({
       contactId,
       userId,
       queueId: req.body?.queueId ?? undefined,
+      botFlow,
     });
     res.json({ ...serializeContact(contact), ...contactFlags(contact) });
   } catch (err) {
@@ -1221,26 +1238,38 @@ whatsappRouter.post("/contacts/assign", async (req, res) => {
 
 whatsappRouter.post("/contacts/open-to-all", async (req, res) => {
   try {
-    const canTransfer =
-      req.user?.role === "admin" ||
-      (await userCanSeeAllMessages(req.user!.id, req.user!.role));
-    if (!canTransfer) {
-      res.status(403).json({ error: "Sem permissão para abrir conversa para a equipe" });
-      return;
-    }
     const contactId = String(req.body?.contactId ?? "");
     if (!contactId) {
       res.status(400).json({ error: "contactId obrigatório" });
       return;
     }
+
     const existing = await prisma.whatsAppContact.findUniqueOrThrow({
       where: { id: contactId },
-      select: { botFlow: true, queueId: true },
+      select: { botFlow: true, queueId: true, assignedToId: true },
     });
+
+    const canTransfer =
+      req.user?.role === "admin" ||
+      (await userCanSeeAllMessages(req.user!.id, req.user!.role)) ||
+      existing.assignedToId === req.user!.id;
+    if (!canTransfer) {
+      res.status(403).json({ error: "Sem permissão para abrir conversa para a equipe" });
+      return;
+    }
+
+    const flowRaw = typeof req.body?.flow === "string" ? req.body.flow.trim() : "";
+    const flow =
+      flowRaw === "financeiro" || flowRaw === "atendimento"
+        ? flowRaw
+        : existing.botFlow === "financeiro"
+          ? "financeiro"
+          : "atendimento";
+
     await openContactToAllSellers({
       contactId,
       queueId: req.body?.queueId ?? existing.queueId ?? undefined,
-      flow: existing.botFlow === "financeiro" ? "financeiro" : "atendimento",
+      flow,
     });
     const contact = await prisma.whatsAppContact.findUniqueOrThrow({
       where: { id: contactId },

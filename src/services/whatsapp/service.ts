@@ -1208,6 +1208,7 @@ export async function assignContact(opts: {
   contactId: string;
   userId?: string | null;
   queueId?: string | null;
+  botFlow?: "atendimento" | "financeiro" | null;
 }) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: opts.contactId },
@@ -1250,6 +1251,7 @@ export async function assignContact(opts: {
           }
         : {}),
       ...(opts.queueId !== undefined ? { queueId: opts.queueId } : {}),
+      ...(opts.botFlow !== undefined ? { botFlow: opts.botFlow } : {}),
     },
     include: {
       assignedTo: { select: { id: true, name: true } },
