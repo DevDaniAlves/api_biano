@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
-import { todayYmd, vencimentosParaDisparoHoje } from "./csv.js";
+import { isBoletoBlockedToday, vencimentosParaDisparoComFeriados } from "./closures.js";
+import { todayYmd } from "./csv.js";
 import { cancelActiveDispatch, dispatchPending, dispatchPendingForVencimentos, isDispatchRunning } from "./boletos.js";
 import { cancelActiveScrapes, isScrapeRunning, runScrapeJobAndWait } from "./jobs.js";
 import { minutesOfDay, nowInSaoPaulo } from "./whatsapp/schedule.js";
@@ -158,7 +159,8 @@ async function executeAutomationOnce(token: number) {
 
   let msg = `Scrape OK: ${job.rowsUpserted} boleto(s)`;
   if (cfg.dispatchAfterScrape) {
-    const vencimentos = vencimentosParaDisparoHoje(nowInSaoPaulo());
+    const weekdays = asWeekdays(cfg.weekdays);
+    const vencimentos = await vencimentosParaDisparoComFeriados(nowInSaoPaulo(), weekdays);
     const d = await dispatchPendingForVencimentos(vencimentos);
     if (!alive()) return { ok: false as const, message: "cancelado" };
     const vencLabel =
@@ -234,6 +236,11 @@ export async function tickGestorAutomation() {
   const now = nowInSaoPaulo();
   const weekdays = asWeekdays(cfg.weekdays);
   if (!weekdays.includes(now.getDay())) return;
+
+  // Feriado com blockBoleto: não dispara (libera próximo dia útil acumular).
+  if (await isBoletoBlockedToday(now)) {
+    return;
+  }
 
   const nowMin = minutesOfDay(now);
   // Roda a partir do horário configurado (não só no minuto exato)

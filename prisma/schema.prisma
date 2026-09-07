@@ -434,3 +434,17 @@ model GestorAutomation {
   lastRunMessage      String?
   updatedAt           DateTime  @updatedAt
 }
+
+/** Feriado / dia sem expediente da loja (America/Sao_Paulo). */
+model BusinessClosure {
+  id              String   @id @default(cuid())
+  /** YYYY-MM-DD */
+  dateYmd         String   @unique
+  label           String?
+  blockAttendance Boolean  @default(true)
+  blockBoleto     Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([dateYmd])
+}

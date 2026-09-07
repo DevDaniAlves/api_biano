@@ -899,7 +899,7 @@ export async function handleDepartmentChoice(contactId: string, raw: string) {
     return;
   }
 
-  const afterHours = !isBusinessHours();
+  const afterHours = !(await isBusinessHours());
 
   if (key === "3") {
     const current = await prisma.whatsAppContact.findUnique({
@@ -1217,7 +1217,7 @@ export async function processInboundBot(contactId: string, body: string | null, 
       return;
     }
 
-    if (!isBusinessHours()) {
+    if (!(await isBusinessHours())) {
       if (shouldIgnoreEchoDigit(contactId, body)) return;
 
       if (isNew || existing.status === "closed") {

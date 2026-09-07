@@ -167,7 +167,7 @@ export function toBrDate(ymd: string): string {
   return `${d}/${m}/${y}`;
 }
 
-/** Segunda = período (sáb–seg); terça a sexta = Hoje. */
+/** Segunda = período (sáb–seg); terça a sexta = Hoje. Feriados usam filters por lista de vencimentos. */
 export function extratoFilterMode(now?: Date): "hoje" | "periodo" {
   return saoPauloNow(now).getDay() === 1 ? "periodo" : "hoje";
 }
@@ -187,14 +187,23 @@ function extratoApiFilterBase(): ExtratoApiFilter {
   };
 }
 
-/** Um filtro (ter–sex). Na segunda use buildExtratoApiFiltersForScrape. */
+/** Diferença em dias: toYmd − fromYmd (negativo se to é anterior). */
+export function daysBetweenYmd(fromYmd: string, toYmd: string): number {
+  const [y1, m1, d1] = fromYmd.split("-").map(Number);
+  const [y2, m2, d2] = toYmd.split("-").map(Number);
+  const a = Date.UTC(y1, m1 - 1, d1);
+  const b = Date.UTC(y2, m2 - 1, d2);
+  return Math.round((b - a) / 86_400_000);
+}
+
+/** Um filtro (compat). Preferir buildExtratoApiFiltersForVencimentos. */
 export function buildExtratoApiFilter(now?: Date): ExtratoApiFilter {
   return buildExtratoApiFiltersForScrape(now)[0]!;
 }
 
 /**
  * Segunda: 3 chamadas diasVencimento (-2 sáb, -1 dom, 0 seg).
- * O filtro "Informar período" (dataVencimentoi/f) não traz vencimentos de domingo.
+ * Preferir buildExtratoApiFiltersForVencimentos quando há feriados.
  */
 export function buildExtratoApiFiltersForScrape(now?: Date): ExtratoApiFilter[] {
   const sp = saoPauloNow(now);
@@ -219,6 +228,32 @@ export function buildExtratoApiFiltersForScrape(now?: Date): ExtratoApiFilter[] 
   ];
 }
 
+/** Uma chamada findAll por vencimento (diasVencimento relativo a hoje). */
+export function buildExtratoApiFiltersForVencimentos(
+  vencimentos: string[],
+  now?: Date
+): ExtratoApiFilter[] {
+  const hoje = todayYmd(saoPauloNow(now));
+  const base = extratoApiFilterBase();
+  const dates = [...new Set(vencimentos.map((v) => v.trim()).filter(Boolean))].sort();
+  if (dates.length === 0) {
+    return [
+      {
+        ...base,
+        diasVencimento: 0,
+        dataVencimentoi: null,
+        dataVencimentof: null,
+      },
+    ];
+  }
+  return dates.map((ymd) => ({
+    ...base,
+    diasVencimento: daysBetweenYmd(hoje, ymd),
+    dataVencimentoi: null,
+    dataVencimentof: null,
+  }));
+}
+
 export function extratoFilterLabel(now?: Date): string {
   if (extratoFilterMode(now) === "periodo") {
     const v = vencimentosParaDisparoHoje(now);
@@ -227,9 +262,19 @@ export function extratoFilterLabel(now?: Date): string {
   return "Hoje";
 }
 
+export function extratoFilterLabelForVencimentos(vencimentos: string[]): string {
+  const dates = [...new Set(vencimentos.map((v) => v.trim()).filter(Boolean))].sort();
+  if (dates.length === 0) return "Hoje (sem vencimentos)";
+  if (dates.length === 1) {
+    return dates[0] === todayYmd() ? "Hoje" : `Vencimento ${toBrDate(dates[0]!)}`;
+  }
+  return `Informar período (${toBrDate(dates[0]!)} – ${toBrDate(dates[dates.length - 1]!)})`;
+}
+
 /**
- * Vencimentos a disparar na automação/manual “hoje”.
- * Segunda-feira: sábado + domingo + hoje (fim de semana não roda automático).
+ * Vencimentos a disparar na automação/manual “hoje” (sem feriados).
+ * Segunda-feira: sábado + domingo + hoje.
+ * Com feriados use vencimentosParaDisparoComFeriados em closures.ts.
  */
 export function vencimentosParaDisparoHoje(now?: Date): string[] {
   const sp =

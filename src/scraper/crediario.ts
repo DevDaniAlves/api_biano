@@ -6,12 +6,13 @@ import { env } from "../config.js";
 import {
   type CsvBoletoRow,
   type ExtratoApiFilter,
-  buildExtratoApiFiltersForScrape,
-  extratoFilterLabel,
+  buildExtratoApiFiltersForVencimentos,
+  extratoFilterLabelForVencimentos,
   normalizePhone,
   parseMoney,
   toYmd,
 } from "../services/csv.js";
+import { vencimentosParaDisparoComFeriados } from "../services/closures.js";
 import { nowInSaoPaulo } from "../services/whatsapp/schedule.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -64,8 +65,9 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
   const page = await context.newPage();
 
   const now = nowInSaoPaulo();
-  const filters = buildExtratoApiFiltersForScrape(now);
-  const filterLabel = extratoFilterLabel(now);
+  const vencimentos = await vencimentosParaDisparoComFeriados(now);
+  const filters = buildExtratoApiFiltersForVencimentos(vencimentos, now);
+  const filterLabel = extratoFilterLabelForVencimentos(vencimentos);
 
   try {
     await login(page);

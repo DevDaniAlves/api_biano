@@ -3,7 +3,14 @@ import multer from "multer";
 import { prisma } from "./db.js";
 import { adminRequired, authRequired } from "./services/auth.js";
 import { dispatchPending, dispatchPendingForVencimentos, resetDispatchStatus } from "./services/boletos.js";
-import { todayYmd, vencimentosParaDisparoHoje } from "./services/csv.js";
+import {
+  createClosure,
+  deleteClosure,
+  listClosures,
+  updateClosure,
+  vencimentosParaDisparoComFeriados,
+} from "./services/closures.js";
+import { todayYmd } from "./services/csv.js";
 import {
   getGestorAutomation,
   resetGestorAutomationRun,
@@ -102,7 +109,7 @@ router.get("/boletos", ...adminOnly, async (req, res) => {
   const vencimentos = vencimentoQuery
     ? [vencimentoQuery]
     : hoje
-      ? vencimentosParaDisparoHoje()
+      ? await vencimentosParaDisparoComFeriados()
       : undefined;
 
   const boletos = await prisma.boleto.findMany({
@@ -117,7 +124,7 @@ router.get("/boletos", ...adminOnly, async (req, res) => {
 
 router.get("/boletos/stats", ...adminOnly, async (req, res) => {
   const hoje = req.query.hoje !== "false" && req.query.hoje !== "0";
-  const vencimentos = hoje ? vencimentosParaDisparoHoje() : undefined;
+  const vencimentos = hoje ? await vencimentosParaDisparoComFeriados() : undefined;
   const grouped = await prisma.boleto.groupBy({
     by: ["status"],
     where: vencimentos?.length ? { vencimento: { in: vencimentos } } : undefined,
@@ -146,7 +153,7 @@ router.post("/dispatch", ...adminOnly, async (req, res) => {
       return;
     }
     if (hoje) {
-      const vencimentos = vencimentosParaDisparoHoje();
+      const vencimentos = await vencimentosParaDisparoComFeriados();
       const result = await dispatchPendingForVencimentos(vencimentos);
       res.json({ vencimento: vencimentos.join(", "), ...result });
       return;
@@ -179,6 +186,56 @@ router.delete("/boletos", ...adminOnly, async (_req, res) => {
     const boletos = await prisma.boleto.deleteMany({});
     const jobs = await prisma.scrapeJob.deleteMany({});
     res.json({ deletedBoletos: boletos.count, deletedJobs: jobs.count });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/closures", ...adminOnly, async (_req, res) => {
+  try {
+    res.json(await listClosures());
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post("/closures", ...adminOnly, async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const row = await createClosure({
+      dateYmd: String(body.dateYmd ?? ""),
+      label: body.label != null ? String(body.label) : null,
+      blockAttendance: typeof body.blockAttendance === "boolean" ? body.blockAttendance : true,
+      blockBoleto: typeof body.blockBoleto === "boolean" ? body.blockBoleto : true,
+    });
+    res.status(201).json(row);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const code =
+      message.includes("inválida") || message.includes("Unique") || message.includes("Unique constraint")
+        ? 400
+        : 500;
+    res.status(code).json({ error: message.includes("Unique") ? "Já existe feriado nesta data" : message });
+  }
+});
+
+router.patch("/closures/:id", ...adminOnly, async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const row = await updateClosure(String(req.params.id), {
+      label: body.label !== undefined ? (body.label == null ? null : String(body.label)) : undefined,
+      blockAttendance: typeof body.blockAttendance === "boolean" ? body.blockAttendance : undefined,
+      blockBoleto: typeof body.blockBoleto === "boolean" ? body.blockBoleto : undefined,
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.delete("/closures/:id", ...adminOnly, async (req, res) => {
+  try {
+    res.json(await deleteClosure(String(req.params.id)));
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

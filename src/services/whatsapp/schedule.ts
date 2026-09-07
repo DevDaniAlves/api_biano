@@ -1,4 +1,5 @@
 import { env } from "../../config.js";
+import { isAttendanceBlockedYmd } from "../closures.js";
 
 /** Horário comercial padrão e utilidades de agenda (America/Sao_Paulo). */
 
@@ -37,7 +38,9 @@ export function minutesOfDay(d: Date): number {
   return d.getHours() * 60 + d.getMinutes();
 }
 
-export function isBusinessHours(d = nowInSaoPaulo()): boolean {
+export async function isBusinessHours(d = nowInSaoPaulo()): Promise<boolean> {
+  const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (await isAttendanceBlockedYmd(ymd)) return false;
   if (env.SKIP_BUSINESS_HOURS) return true;
   const slot = BUSINESS.hours[d.getDay()];
   if (!slot) return false;
