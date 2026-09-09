@@ -922,86 +922,186 @@ export async function sendTextMessage(opts: {
   return msg;
 }
 
-/** Disparo proativo: template Marketing com foto do produto + nome do cliente/produto. */
+export type OutreachTemplateKind =
+  | "continuidade_pedido"
+  | "retomada_atendimento"
+  | "abordagem_novidades"
+  | "produto_disponivel";
+
+const OUTREACH_TEMPLATES: Record<
+  OutreachTemplateKind,
+  { label: string; category: "utility" | "marketing"; needsProduct: boolean }
+> = {
+  continuidade_pedido: { label: "Continuidade do pedido", category: "utility", needsProduct: false },
+  retomada_atendimento: { label: "Retomada de atendimento", category: "marketing", needsProduct: false },
+  abordagem_novidades: { label: "Abordagem de novidades", category: "marketing", needsProduct: false },
+  produto_disponivel: { label: "Produto disponível", category: "marketing", needsProduct: true },
+};
+
+function normalizeOutreachPhone(raw: string): string {
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) throw new Error("Informe o WhatsApp");
+  if (!digits.startsWith("55") && (digits.length === 10 || digits.length === 11)) {
+    digits = `55${digits}`;
+  }
+  if (digits.length < 12 || digits.length > 13) {
+    throw new Error("Informe o WhatsApp com DDD (ex.: 66999999999)");
+  }
+  return digits;
+}
+
+function parseOutreachTemplate(raw: string | undefined | null): OutreachTemplateKind {
+  const name = (raw || "continuidade_pedido").trim().toLowerCase();
+  if (name === "retomada_atendimento") return "retomada_atendimento";
+  if (name === "abordagem_novidades") return "abordagem_novidades";
+  if (
+    name === "produto_disponivel" ||
+    name === (env.META_PRODUTO_TEMPLATE_NAME || "produto_disponivel").trim().toLowerCase()
+  ) {
+    return "produto_disponivel";
+  }
+  return "continuidade_pedido";
+}
+
+async function resolveOutreachContact(opts: {
+  contactId?: string | null;
+  phone?: string | null;
+  clientName?: string | null;
+}) {
+  const contactId = (opts.contactId || "").trim();
+  if (contactId) {
+    return prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+  }
+
+  const phone = normalizeOutreachPhone(opts.phone || "");
+  const nome = (opts.clientName || "").trim().slice(0, 60) || null;
+  const now = new Date();
+  return prisma.whatsAppContact.upsert({
+    where: { phone },
+    create: {
+      phone,
+      remoteJid: `${phone}@s.whatsapp.net`,
+      savedName: nome,
+      pushName: nome,
+      name: nome,
+      status: "closed",
+      lastMessageAt: now,
+      lastMessagePreview: null,
+    },
+    update: nome
+      ? {
+          savedName: nome,
+          name: nome,
+        }
+      : {},
+  });
+}
+
+/** Disparo proativo por template (continuidade / retomada / novidades / produto). */
 export async function sendProductOutreach(opts: {
-  contactId: string;
-  productName: string;
+  contactId?: string | null;
+  phone?: string | null;
+  clientName?: string | null;
+  templateName?: string | null;
+  productName?: string | null;
   userId: string;
   role?: "admin" | "seller";
-  filePath: string;
-  mimetype: string;
-  fileName: string;
-  publicUrl: string;
+  filePath?: string | null;
+  mimetype?: string | null;
+  fileName?: string | null;
+  publicUrl?: string | null;
 }) {
-  const productName = opts.productName.trim();
-  if (!productName) throw new Error("Informe o nome do produto");
-  if (!opts.filePath || !fs.existsSync(opts.filePath)) {
+  const templateKind = parseOutreachTemplate(opts.templateName);
+  const meta_ = OUTREACH_TEMPLATES[templateKind];
+  const productName = (opts.productName || "").trim();
+  if (meta_.needsProduct && !productName) throw new Error("Informe o nome do produto");
+  if (meta_.needsProduct && (!opts.filePath || !fs.existsSync(opts.filePath))) {
     throw new Error("Envie a foto do produto");
   }
 
-  const contact = await prisma.whatsAppContact.findUniqueOrThrow({
-    where: { id: opts.contactId },
+  const contact = await resolveOutreachContact({
+    contactId: opts.contactId,
+    phone: opts.phone,
+    clientName: opts.clientName,
   });
   const role = opts.role ?? "seller";
   const provider = await activeProvider();
   if (provider !== "meta") {
-    throw new Error("Entrar em contato com foto exige provider Meta (Cloud API)");
+    throw new Error("Entrar em contato exige provider Meta (Cloud API)");
   }
   if (!meta.enabled) throw new Error("Meta não configurada");
 
-  const templateName = (env.META_PRODUTO_TEMPLATE_NAME || "produto_disponivel").trim();
   const clientName =
-    (contact.name || contact.pushName || "Cliente").trim().slice(0, 60) || "Cliente";
+    (opts.clientName || contact.savedName || contact.name || contact.pushName || "Cliente")
+      .trim()
+      .slice(0, 60) || "Cliente";
 
-  const buf = fs.readFileSync(opts.filePath);
-  const up = await meta.uploadMedia({
-    buffer: buf,
-    mimetype: opts.mimetype || "image/jpeg",
-    fileName: opts.fileName || "produto.jpg",
-  });
-  if (!up.ok) {
-    throw new Error(`Upload foto Meta: HTTP ${up.status}: ${up.text}`);
+  const templateName =
+    templateKind === "produto_disponivel"
+      ? (env.META_PRODUTO_TEMPLATE_NAME || "produto_disponivel").trim()
+      : templateKind;
+
+  const components: Array<Record<string, unknown>> = [];
+  let preview = `${meta_.label}: ${clientName}`;
+  let msgType: "image" | "template" = "template";
+  let mediaUrl: string | null = opts.publicUrl ?? null;
+
+  if (templateKind === "produto_disponivel") {
+    const buf = fs.readFileSync(opts.filePath!);
+    const up = await meta.uploadMedia({
+      buffer: buf,
+      mimetype: opts.mimetype || "image/jpeg",
+      fileName: opts.fileName || "produto.jpg",
+    });
+    if (!up.ok) {
+      throw new Error(`Upload foto Meta: HTTP ${up.status}: ${up.text}`);
+    }
+    components.push({
+      type: "header",
+      parameters: [{ type: "image", image: { id: up.id } }],
+    });
+    components.push({
+      type: "body",
+      parameters: [
+        { type: "text", text: clientName },
+        { type: "text", text: productName.slice(0, 60) },
+      ],
+    });
+    preview = `Produto disponível: ${productName}`;
+    msgType = "image";
+  } else {
+    components.push({
+      type: "body",
+      parameters: [{ type: "text", text: clientName }],
+    });
   }
 
-  const preview = `Produto disponível: ${productName}`;
   const r = await sendOutbound({
     to: contact.remoteJid || contact.phone,
     source: "agent",
     contactId: contact.id,
     kind: "template",
-    category: "marketing",
+    category: meta_.category,
     billable: true,
     bodyPreview: preview,
     template: {
       name: templateName,
       language: env.META_BOLETO_TEMPLATE_LANG || "pt_BR",
-      components: [
-        {
-          type: "header",
-          parameters: [{ type: "image", image: { id: up.id } }],
-        },
-        {
-          type: "body",
-          parameters: [
-            { type: "text", text: clientName },
-            { type: "text", text: productName.slice(0, 60) },
-          ],
-        },
-      ],
+      components,
     },
   });
   if (!r.ok) throw new Error(`Falha ao enviar template: ${r.error}`);
 
   if (role !== "admin") {
-    await assumeOnOpen(opts.contactId, opts.userId, role).catch(() => {});
+    await assumeOnOpen(contact.id, opts.userId, role).catch(() => {});
   }
   await setWebhookPaused(contact.id, true).catch(() => {});
 
   const msg = await upsertOutboundMessage({
     contactId: contact.id,
-    type: "image",
+    type: msgType,
     body: preview,
-    mediaUrl: opts.publicUrl,
+    mediaUrl,
     sentById: opts.userId,
     externalId: r.externalId,
   });
@@ -1018,7 +1118,7 @@ export async function sendProductOutreach(opts: {
     },
   });
 
-  return msg;
+  return { ...msg, contactId: contact.id };
 }
 
 export async function sendImageMessage(opts: {

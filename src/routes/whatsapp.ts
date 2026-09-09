@@ -1160,28 +1160,43 @@ whatsappRouter.post("/messages/images", upload.array("files", 12), async (req, r
   }
 });
 
-/** Template Marketing: avisar cliente que o produto chegou (foto + nome). */
+/** Template Marketing/Utility: contactar cliente (por id ou telefone novo). */
 whatsappRouter.post("/messages/product-outreach", upload.single("file"), async (req, res) => {
   try {
     const contactId = String(req.body?.contactId ?? "").trim();
+    const phone = String(req.body?.phone ?? "").trim();
+    const clientName = String(req.body?.clientName ?? "").trim();
+    const templateName = String(req.body?.templateName ?? "continuidade_pedido").trim();
     const productName = String(req.body?.productName ?? "").trim();
-    if (!contactId || !productName || !req.file) {
-      res.status(400).json({ error: "contactId, productName e foto obrigatórios" });
+    if (!contactId && !phone) {
+      res.status(400).json({ error: "Selecione um cliente ou informe o WhatsApp" });
       return;
     }
-    if (!req.file.mimetype.startsWith("image/")) {
-      res.status(400).json({ error: "Envie uma imagem (JPG/PNG)" });
-      return;
+    const needsProduct =
+      templateName === "produto_disponivel" ||
+      templateName === (env.META_PRODUTO_TEMPLATE_NAME || "produto_disponivel");
+    if (needsProduct) {
+      if (!productName || !req.file) {
+        res.status(400).json({ error: "Para produto disponível: nome e foto obrigatórios" });
+        return;
+      }
+      if (!req.file.mimetype.startsWith("image/")) {
+        res.status(400).json({ error: "Envie uma imagem (JPG/PNG)" });
+        return;
+      }
     }
-    const publicUrl = `/uploads/${req.file.filename}`;
+    const publicUrl = req.file ? `/uploads/${req.file.filename}` : null;
     const msg = await sendProductOutreach({
-      contactId,
-      productName,
+      contactId: contactId || null,
+      phone: phone || null,
+      clientName: clientName || null,
+      templateName,
+      productName: productName || null,
       userId: req.user!.id,
       role: req.user!.role as "admin" | "seller",
-      filePath: req.file.path,
-      mimetype: req.file.mimetype,
-      fileName: req.file.originalname,
+      filePath: req.file?.path ?? null,
+      mimetype: req.file?.mimetype ?? null,
+      fileName: req.file?.originalname ?? null,
       publicUrl,
     });
     res.json(msg);
