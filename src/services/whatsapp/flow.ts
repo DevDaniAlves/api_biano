@@ -1102,7 +1102,9 @@ export function buildOutsideHoursMessage(clienteName?: string) {
     ? `Olá, ${nome.charAt(0).toUpperCase() + nome.slice(1).toLowerCase()}!`
     : "Olá!";
 
-  const catalogUrl = "https://calangusmodajovem.com.br";
+  const catalogUrl = (env.CATALOG_PUBLIC_URL || "https://www.calangus.com.br")
+    .replace(/\/+$/, "")
+    .trim();
 
   return (
     `${saudacao} Nosso time de venda não está em horário de atendimento, mas podemos lhe retornar no primeiro horário útil.\n\n` +

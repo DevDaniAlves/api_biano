@@ -67,7 +67,7 @@ const schema = z.object({
   /** wa_me | form — modo de contato no catálogo público. */
   CATALOG_CONTACT_MODE: z.enum(["wa_me", "form"]).default("wa_me"),
   /** URL pública da loja/catálogo (msg fora do horário). */
-  CATALOG_PUBLIC_URL: z.string().default("https://webbiano-production.up.railway.app"),
+  CATALOG_PUBLIC_URL: z.string().default("https://www.calangus.com.br"),
   /** Se definido, ignora o telefone do Meu Crediário e envia só para este número (DDI+DDD). */
   WHATSAPP_OVERRIDE_PHONE: z.string().optional(),
   MESSAGE_TEMPLATE: z
