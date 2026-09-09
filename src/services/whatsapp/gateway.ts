@@ -5,6 +5,7 @@ import { gupshup, isUnreachableMediaUrl, persistBase64Upload, persistBufferUploa
 import { prepareGupshupAudioUpload } from "./gupshup-audio.js";
 import { extractGupshupMessageId, gupshupSubmitOk, templateParamsFromComponents } from "./gupshup-mapper.js";
 import { meta, MetaClient } from "./meta.js";
+import { prepareMetaVideoUpload } from "./meta-video.js";
 
 export type WhatsAppProvider = "meta" | "evolution" | "gupshup";
 export type SendSource = "boleto" | "bot" | "agent" | "system";
@@ -204,6 +205,29 @@ export async function sendOutbound(opts: {
               return { ok: false, externalId: null, error: errOut, provider, logId: log.id };
             }
           }
+          // webm/mov (câmera do navegador/iPhone) → MP4: Meta só aceita video/mp4 e video/3gp.
+          if (buf.length >= 40 && opts.media.mediatype === "video") {
+            try {
+              const prep = await prepareMetaVideoUpload({
+                buffer: buf,
+                mimetype: mime,
+                fileName,
+              });
+              buf = Buffer.from(prep.buffer);
+              mime = prep.mimetype;
+              fileName = prep.fileName;
+              console.log("[meta] vídeo preparado", mime, fileName, `${buf.length}b`);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              const errOut = `Vídeo: conversão para MP4 falhou (${msg}). Envie um MP4 de até 16 MB.`;
+              console.error("[meta] video prepare", msg);
+              await prisma.whatsAppSendLog.update({
+                where: { id: log.id },
+                data: { status: "failed", error: errOut },
+              });
+              return { ok: false, externalId: null, error: errOut, provider, logId: log.id };
+            }
+          }
           const up = await meta.uploadMedia({
             buffer: buf,
             mimetype: mime,
@@ -333,6 +357,34 @@ export async function sendOutbound(opts: {
               const msg = err instanceof Error ? err.message : String(err);
               const errOut = `Áudio: conversão para MP3 falhou (${msg}).`;
               console.error("[gupshup] audio prepare", msg);
+              await prisma.whatsAppSendLog.update({
+                where: { id: log.id },
+                data: { status: "failed", error: errOut },
+              });
+              return { ok: false, externalId: null, error: errOut, provider, logId: log.id };
+            }
+            const local = persistBufferUpload({
+              buffer: buf,
+              fileName: uploadName,
+              mimetype: uploadMime,
+            });
+            url = toPublicMediaUrl(local);
+          } else if (buf.length >= 40 && opts.media.mediatype === "video") {
+            try {
+              const prep = await prepareMetaVideoUpload({
+                buffer: buf,
+                mimetype: uploadMime,
+                fileName: uploadName,
+              });
+              buf = Buffer.from(prep.buffer);
+              uploadMime = prep.mimetype;
+              uploadName = prep.fileName;
+              mediaFileName = prep.fileName;
+              console.log("[gupshup] vídeo preparado", uploadMime, uploadName);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              const errOut = `Vídeo: conversão para MP4 falhou (${msg}). Envie um MP4 de até 16 MB.`;
+              console.error("[gupshup] video prepare", msg);
               await prisma.whatsAppSendLog.update({
                 where: { id: log.id },
                 data: { status: "failed", error: errOut },
