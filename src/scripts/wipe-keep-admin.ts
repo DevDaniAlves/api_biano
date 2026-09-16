@@ -97,13 +97,13 @@ async function main() {
     create: {
       id: "default",
       enabled: false,
-      runTimeHHMM: "08:00",
+      runTimeHHMM: "13:00",
       weekdays: [1, 2, 3, 4, 5],
       dispatchAfterScrape: true,
     },
     update: {
       enabled: false,
-      runTimeHHMM: "08:00",
+      runTimeHHMM: "13:00",
       weekdays: [1, 2, 3, 4, 5],
       dispatchAfterScrape: true,
       lastRunAt: null,

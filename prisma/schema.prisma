@@ -424,7 +424,7 @@ model GestorAutomation {
   id                  String    @id @default("default")
   enabled             Boolean   @default(false)
   /** HH:mm em America/Sao_Paulo */
-  runTimeHHMM         String    @default("08:00")
+  runTimeHHMM         String    @default("13:00")
   /** Dias da semana JS: 0=dom … 6=sáb. Padrão seg–sex. */
   weekdays            Json      @default("[1,2,3,4,5]")
   dispatchAfterScrape Boolean   @default(true)

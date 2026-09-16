@@ -77,7 +77,7 @@ export async function updateGestorAutomation(input: {
       id: "default",
       enabled: typeof input.enabled === "boolean" ? input.enabled : false,
       runTimeHHMM:
-        typeof input.runTimeHHMM === "string" ? normalizeHHMM(input.runTimeHHMM) : "08:00",
+        typeof input.runTimeHHMM === "string" ? normalizeHHMM(input.runTimeHHMM) : "13:00",
       weekdays: Array.isArray(input.weekdays)
         ? ([...new Set(input.weekdays.map(Number))].sort((a, b) => a - b) as Prisma.InputJsonValue)
         : DEFAULT_WEEKDAYS,

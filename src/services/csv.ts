@@ -202,33 +202,20 @@ export function buildExtratoApiFilter(now?: Date): ExtratoApiFilter {
 }
 
 /**
- * Segunda: 3 chamadas diasVencimento (-2 sáb, -1 dom, 0 seg).
+ * Filtros de extração para o dia de hoje (considerando regra de segunda-feira sáb–seg).
  * Preferir buildExtratoApiFiltersForVencimentos quando há feriados.
  */
 export function buildExtratoApiFiltersForScrape(now?: Date): ExtratoApiFilter[] {
-  const sp = saoPauloNow(now);
-  const base = extratoApiFilterBase();
-
-  if (sp.getDay() === 1) {
-    return [-2, -1, 0].map((diasVencimento) => ({
-      ...base,
-      diasVencimento,
-      dataVencimentoi: null,
-      dataVencimentof: null,
-    }));
-  }
-
-  return [
-    {
-      ...base,
-      diasVencimento: 0,
-      dataVencimentoi: null,
-      dataVencimentof: null,
-    },
-  ];
+  return buildExtratoApiFiltersForVencimentos(vencimentosParaDisparoHoje(now), now);
 }
 
-/** Uma chamada findAll por vencimento (diasVencimento relativo a hoje). */
+/**
+ * Constrói filtro para a API do Meu Crediário.
+ * - Se for apenas o dia de hoje: diasVencimento = 0 (filtro "Hoje").
+ * - Se for período (ex.: seg sáb–seg, pós-feriado ou data específica):
+ *   Usa diasVencimento = -2 ("Informar período") com dataVencimentoi e dataVencimentof
+ *   no formato ISO UTC (ex.: 2026-09-12T03:00:00.000Z).
+ */
 export function buildExtratoApiFiltersForVencimentos(
   vencimentos: string[],
   now?: Date
@@ -236,7 +223,8 @@ export function buildExtratoApiFiltersForVencimentos(
   const hoje = todayYmd(saoPauloNow(now));
   const base = extratoApiFilterBase();
   const dates = [...new Set(vencimentos.map((v) => v.trim()).filter(Boolean))].sort();
-  if (dates.length === 0) {
+
+  if (dates.length === 0 || (dates.length === 1 && dates[0] === hoje)) {
     return [
       {
         ...base,
@@ -246,12 +234,18 @@ export function buildExtratoApiFiltersForVencimentos(
       },
     ];
   }
-  return dates.map((ymd) => ({
-    ...base,
-    diasVencimento: daysBetweenYmd(hoje, ymd),
-    dataVencimentoi: null,
-    dataVencimentof: null,
-  }));
+
+  const minDate = dates[0]!;
+  const maxDate = dates[dates.length - 1]!;
+
+  return [
+    {
+      ...base,
+      diasVencimento: -2,
+      dataVencimentoi: `${minDate}T03:00:00.000Z`,
+      dataVencimentof: `${maxDate}T03:00:00.000Z`,
+    },
+  ];
 }
 
 export function extratoFilterLabel(now?: Date): string {
