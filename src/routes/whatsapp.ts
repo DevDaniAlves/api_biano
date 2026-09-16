@@ -35,6 +35,7 @@ import {
   UPLOADS_DIR,
   assignContact,
   contactFlags,
+  deleteMessage,
   getStoreLocationConfig,
   getPixConfig,
   getWhatsAppReports,
@@ -1064,6 +1065,20 @@ whatsappRouter.post("/messages", async (req, res) => {
         : null,
     });
     res.json(msg);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.delete("/messages/:id", async (req, res) => {
+  try {
+    const id = String(req.params.id ?? "").trim();
+    if (!id) {
+      res.status(400).json({ error: "id obrigatório" });
+      return;
+    }
+    const result = await deleteMessage(id);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

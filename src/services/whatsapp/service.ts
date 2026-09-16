@@ -553,6 +553,23 @@ export async function recordBoletoDispatchConversation(opts: {
   return contact.id;
 }
 
+export const META_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function getMetaWindowStatus(contact: { lastClientMessageAt: Date | null }) {
+  const lastClient = contact.lastClientMessageAt?.getTime() ?? 0;
+  if (!lastClient) {
+    return { open: false, remainingMs: 0, hours: 0, minutes: 0 };
+  }
+  const elapsed = Date.now() - lastClient;
+  if (elapsed >= META_WINDOW_MS) {
+    return { open: false, remainingMs: 0, hours: 0, minutes: 0 };
+  }
+  const remainingMs = META_WINDOW_MS - elapsed;
+  const hours = Math.floor(remainingMs / 3_600_000);
+  const minutes = Math.floor((remainingMs % 3_600_000) / 60_000);
+  return { open: true, remainingMs, hours, minutes };
+}
+
 export function contactFlags(contact: {
   status: string;
   lastClientMessageAt: Date | null;
@@ -573,6 +590,8 @@ export function contactFlags(contact: {
   const lastClient = contact.lastClientMessageAt?.getTime() ?? 0;
   const sellerInactiveMs = onSeller && lastClient ? now - lastClient : 0;
 
+  const metaWindow = getMetaWindowStatus(contact);
+
   return {
     waitingOn: onClient ? ("client" as const) : onSeller ? ("seller" as const) : null,
     canWarnInactivity: isHuman && onClient && clientInactiveMs >= warnMs,
@@ -580,6 +599,10 @@ export function contactFlags(contact: {
     inactiveMinutes: onClient && lastOut ? Math.floor(clientInactiveMs / 60_000) : 0,
     sellerInactive: isHuman && onSeller && sellerInactiveMs >= warnMs,
     sellerInactiveMinutes: onSeller && lastClient ? Math.floor(sellerInactiveMs / 60_000) : 0,
+    metaWindowOpen: metaWindow.open,
+    metaWindowRemainingMs: metaWindow.remainingMs,
+    metaWindowHours: metaWindow.hours,
+    metaWindowMinutes: metaWindow.minutes,
   };
 }
 
@@ -1379,6 +1402,12 @@ export async function resolveContact(contactId: string) {
   if (contact.webhookPaused) {
     throw new Error("Cliente em atendimento manual — volte ao webhook antes de finalizar");
   }
+  const metaWindow = getMetaWindowStatus(contact);
+  if (metaWindow.open) {
+    throw new Error(
+      `A conversa só pode ser finalizada após a janela de 24h da Meta expirar. Restam ${metaWindow.hours}h ${metaWindow.minutes}min desde a última mensagem do cliente.`
+    );
+  }
   // Segurança: fluxo de inatividade nunca pede nota (evita bug legado autoResolve → resolveContact).
   if (contact.inactivityWarnedAt && contact.status === "human") {
     return resolveContactForInactivity(contactId);
@@ -1471,6 +1500,12 @@ export async function resolveContactForInactivity(contactId: string) {
   if (contact.status !== "human") {
     throw new Error("Só é possível encerrar por inatividade durante o atendimento humano");
   }
+  const metaWindow = getMetaWindowStatus(contact);
+  if (metaWindow.open) {
+    throw new Error(
+      `A conversa só pode ser finalizada após a janela de 24h da Meta expirar. Restam ${metaWindow.hours}h ${metaWindow.minutes}min desde a última mensagem do cliente.`
+    );
+  }
 
   let externalId: string | null = null;
   if (await messagingEnabled()) {
@@ -1511,6 +1546,25 @@ export async function resolveContactForInactivity(contactId: string) {
   }
 
   return prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
+}
+
+/** Apaga mensagem e remove mídia física do disco (se existir). */
+export async function deleteMessage(messageId: string) {
+  const msg = await prisma.whatsAppMessage.findUniqueOrThrow({
+    where: { id: messageId },
+  });
+
+  if (msg.mediaUrl && msg.mediaUrl.startsWith("/uploads/")) {
+    const filename = path.basename(msg.mediaUrl);
+    const filePath = path.join(UPLOADS_DIR, filename);
+    await fs.promises.unlink(filePath).catch(() => {});
+  }
+
+  await prisma.whatsAppMessage.delete({
+    where: { id: messageId },
+  });
+
+  return { id: messageId, contactId: msg.contactId };
 }
 
 /** Aviso de inatividade manual (vendedor). */
