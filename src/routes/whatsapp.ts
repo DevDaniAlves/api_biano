@@ -203,9 +203,89 @@ whatsappRouter.get("/webhook/meta", (req, res) => {
   res.sendStatus(403);
 });
 
+// =============================================================================
+// CONFIGURAÇÃO DO ROTEADOR / PROXY DE MENSAGENS DA META (CLOUD API)
+// =============================================================================
+const LEGACY_META_PHONE_NUMBER = "556634016000";
+const NEW_SAAS_WEBHOOK_URL = "https://caristeochatbackend-production.up.railway.app/webhook";
+
+/**
+ * Extrai o display_phone_number e phone_number_id contidos nos metadados do payload da Meta.
+ */
+function extractMetaAccountPhone(body: Record<string, unknown>): {
+  displayPhone: string;
+  phoneNumberId: string;
+} {
+  const entry = Array.isArray(body?.entry) ? body.entry : [];
+  for (const ent of entry) {
+    if (!ent || typeof ent !== "object") continue;
+    const changes = Array.isArray((ent as { changes?: unknown[] }).changes)
+      ? (ent as { changes: unknown[] }).changes
+      : [];
+    for (const ch of changes) {
+      if (!ch || typeof ch !== "object") continue;
+      const val = (ch as { value?: Record<string, unknown> }).value;
+      if (!val || typeof val !== "object") continue;
+      const meta = val.metadata as
+        | { display_phone_number?: string; phone_number_id?: string }
+        | undefined;
+      if (meta) {
+        const displayPhone = String(meta.display_phone_number ?? "").replace(/\D/g, "");
+        const phoneNumberId = String(meta.phone_number_id ?? "").trim();
+        if (displayPhone || phoneNumberId) {
+          return { displayPhone, phoneNumberId };
+        }
+      }
+    }
+  }
+  return { displayPhone: "", phoneNumberId: "" };
+}
+
+/**
+ * Encaminha assincronamente o payload recebido da Meta para o novo SaaS via HTTP POST.
+ */
+async function forwardMetaWebhookToNewSaaS(
+  body: Record<string, unknown>,
+  incomingHeaders: Record<string, string | string[] | undefined>
+): Promise<void> {
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (typeof incomingHeaders["x-hub-signature-256"] === "string") {
+      headers["x-hub-signature-256"] = incomingHeaders["x-hub-signature-256"];
+    }
+    if (typeof incomingHeaders["x-hub-signature"] === "string") {
+      headers["x-hub-signature"] = incomingHeaders["x-hub-signature"];
+    }
+    if (typeof incomingHeaders["user-agent"] === "string") {
+      headers["user-agent"] = incomingHeaders["user-agent"];
+    }
+
+    const response = await fetch(NEW_SAAS_WEBHOOK_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      console.warn(
+        `[webhook/proxy] Nova API respondeu com status ${response.status}: ${response.statusText}`
+      );
+    }
+  } catch (err) {
+    console.error("[webhook/proxy] Falha ao encaminhar payload para o novo SaaS:", err);
+  }
+}
+
 whatsappRouter.post("/webhook/meta", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
+
+    // 1. Resposta IMEDIATA para a Meta (evita bloqueios ou timeouts do Facebook)
+    res.status(200).send("EVENT_RECEIVED");
+
+    // 2. Extração dos dados para auditoria / registro de hits
     const entry0 = Array.isArray(body.entry) ? (body.entry[0] as Record<string, unknown>) : null;
     const change0 =
       entry0 && Array.isArray(entry0.changes)
@@ -230,6 +310,7 @@ whatsappRouter.post("/webhook/meta", async (req, res) => {
       : st0
         ? `status=${String(st0.status ?? "")}`
         : null;
+
     recordWebhookHit({
       path: "/whatsapp/webhook/meta",
       method: "POST",
@@ -238,11 +319,34 @@ whatsappRouter.post("/webhook/meta", async (req, res) => {
       from: from || null,
       preview,
     });
-    res.sendStatus(200);
-    void handleMetaWebhook(body).catch((err) => console.error("[webhook/meta]", err));
+
+    // 3. Identifica o número que gerou o evento (display_phone_number ou phone_number_id)
+    const { displayPhone, phoneNumberId } = extractMetaAccountPhone(body);
+
+    // 4. Regra de Roteamento Baseada no Número
+    if (displayPhone === LEGACY_META_PHONE_NUMBER) {
+      // -----------------------------------------------------------------------
+      // [CÓDIGO ANTIGO]: Mensagens do número 556634016000 continuam no fluxo local
+      // -----------------------------------------------------------------------
+      void handleMetaWebhook(body).catch((err) =>
+        console.error("[webhook/meta][legacy]", err)
+      );
+    } else {
+      // -----------------------------------------------------------------------
+      // [NOVO SAAS]: Qualquer outro número é encaminhado via POST assíncrono
+      // -----------------------------------------------------------------------
+      console.log(
+        `[webhook/meta][proxy] Roteando evento do número ${displayPhone || phoneNumberId || "(desconhecido)"} para novo SaaS`
+      );
+      void forwardMetaWebhookToNewSaaS(body, req.headers).catch((err) =>
+        console.error("[webhook/meta][proxy]", err)
+      );
+    }
   } catch (err) {
     console.error("[webhook/meta]", err);
-    if (!res.headersSent) res.sendStatus(200);
+    if (!res.headersSent) {
+      res.status(200).send("EVENT_RECEIVED");
+    }
   }
 });
 
@@ -337,13 +441,12 @@ whatsappRouter.get("/meta/embedded-signup", (req, res) => {
 <body>
   <h1 class="${error ? "err" : "ok"}">${error ? "Cadastro incompleto / erro" : "Cadastro incorporado — retorno OK"}</h1>
   <p>Callback do <strong>Cadastro incorporado hospedado pela Meta</strong> no BIANO.</p>
-  ${
-    error
+  ${error
       ? `<div class="box err"><strong>Erro:</strong> ${esc(error)}</div>`
       : code
         ? `<div class="box ok"><strong>Code recebido.</strong> Guarde este retorno e use no exchange do token (Graph API).</div>`
         : `<div class="box">Nenhum <code>code</code> na URL. Se o fluxo Meta terminou, confira se o redirect URI está idêntico ao cadastrado.</div>`
-  }
+    }
   <table>
     <tbody>
       ${rows || "<tr><td colspan='2'>Sem query params</td></tr>"}
@@ -538,9 +641,9 @@ whatsappRouter.post("/meta/profile", async (req, res) => {
       ? websitesRaw.map((w: unknown) => String(w).trim()).filter(Boolean)
       : typeof websitesRaw === "string"
         ? websitesRaw
-            .split(/[\n,]/)
-            .map((w) => w.trim())
-            .filter(Boolean)
+          .split(/[\n,]/)
+          .map((w) => w.trim())
+          .filter(Boolean)
         : undefined;
 
     const r = await meta.updateBusinessProfile({
@@ -653,115 +756,115 @@ whatsappRouter.post(
     next();
   },
   async (req, res) => {
-  try {
-    if (!meta.enabled) {
-      res.status(400).json({ error: "Meta não configurada" });
-      return;
-    }
-    const name = String(req.body?.name ?? "").trim();
-    const bodyText = String(req.body?.bodyText ?? "").trim();
-    const language = String(req.body?.language ?? env.META_BOLETO_TEMPLATE_LANG ?? "pt_BR").trim();
-    const category = String(req.body?.category ?? "UTILITY").trim().toUpperCase() as
-      | "UTILITY"
-      | "MARKETING"
-      | "AUTHENTICATION";
-    const replaceExisting =
-      req.body?.replaceExisting === true ||
-      req.body?.replaceExisting === "true" ||
-      req.body?.replaceExisting === "1";
-    let bodyExamples: string[] = [];
-    if (Array.isArray(req.body?.bodyExamples)) {
-      bodyExamples = (req.body.bodyExamples as unknown[])
-        .map((x) => String(x ?? "").trim())
-        .filter(Boolean);
-    } else if (typeof req.body?.bodyExamples === "string" && req.body.bodyExamples.trim()) {
-      try {
-        const parsed = JSON.parse(req.body.bodyExamples) as unknown;
-        if (Array.isArray(parsed)) {
-          bodyExamples = parsed.map((x) => String(x ?? "").trim()).filter(Boolean);
-        }
-      } catch {
-        bodyExamples = String(req.body.bodyExamples)
-          .split("|")
-          .map((x: string) => x.trim())
+    try {
+      if (!meta.enabled) {
+        res.status(400).json({ error: "Meta não configurada" });
+        return;
+      }
+      const name = String(req.body?.name ?? "").trim();
+      const bodyText = String(req.body?.bodyText ?? "").trim();
+      const language = String(req.body?.language ?? env.META_BOLETO_TEMPLATE_LANG ?? "pt_BR").trim();
+      const category = String(req.body?.category ?? "UTILITY").trim().toUpperCase() as
+        | "UTILITY"
+        | "MARKETING"
+        | "AUTHENTICATION";
+      const replaceExisting =
+        req.body?.replaceExisting === true ||
+        req.body?.replaceExisting === "true" ||
+        req.body?.replaceExisting === "1";
+      let bodyExamples: string[] = [];
+      if (Array.isArray(req.body?.bodyExamples)) {
+        bodyExamples = (req.body.bodyExamples as unknown[])
+          .map((x) => String(x ?? "").trim())
           .filter(Boolean);
-      }
-    }
-    const headerFormat =
-      String(req.body?.headerFormat ?? "").trim().toUpperCase() === "IMAGE" ? "IMAGE" : null;
-    let headerHandle = String(req.body?.headerHandle ?? "").trim() || null;
-    const headerSampleUrl = String(req.body?.headerSampleUrl ?? "").trim();
-    if (!name || !bodyText) {
-      res.status(400).json({ error: "name e bodyText obrigatórios" });
-      return;
-    }
-    if (headerFormat === "IMAGE" && !headerHandle && req.file) {
-      const buf = fs.readFileSync(req.file.path);
-      const up = await meta.uploadTemplateHeaderHandle({
-        buffer: buf,
-        mimeType: req.file.mimetype || "image/jpeg",
-        fileName: req.file.originalname || "template_sample.jpg",
-      });
-      if (!up.ok) {
-        res.status(up.status || 400).json({ error: up.text.slice(0, 800) });
-        return;
-      }
-      headerHandle = up.handle;
-    }
-    if (headerFormat === "IMAGE" && !headerHandle && headerSampleUrl) {
-      if (!/^https:\/\//i.test(headerSampleUrl)) {
-        res.status(400).json({ error: "headerSampleUrl deve ser HTTPS público" });
-        return;
-      }
-      const imgRes = await fetch(headerSampleUrl);
-      if (!imgRes.ok) {
-        res.status(400).json({ error: `Não baixou a imagem de exemplo (${imgRes.status})` });
-        return;
-      }
-      const buf = Buffer.from(await imgRes.arrayBuffer());
-      const mime =
-        imgRes.headers.get("content-type")?.split(";")[0].trim() ||
-        (headerSampleUrl.toLowerCase().includes(".png") ? "image/png" : "image/jpeg");
-      const up = await meta.uploadTemplateHeaderHandle({
-        buffer: buf,
-        mimeType: mime,
-        fileName: "template_sample.jpg",
-      });
-      if (!up.ok) {
-        res.status(up.status || 400).json({ error: up.text.slice(0, 800) });
-        return;
-      }
-      headerHandle = up.handle;
-    }
-    if (replaceExisting) {
-      const del = await meta.deleteMessageTemplate(name);
-      if (!del.ok && del.status !== 404) {
-        // segue mesmo se não existir; só aborta em erro grave inesperado
-        const msg = del.text.toLowerCase();
-        if (!msg.includes("does not exist") && !msg.includes("not found")) {
-          console.warn("[meta] delete template before recreate", del.status, del.text.slice(0, 200));
+      } else if (typeof req.body?.bodyExamples === "string" && req.body.bodyExamples.trim()) {
+        try {
+          const parsed = JSON.parse(req.body.bodyExamples) as unknown;
+          if (Array.isArray(parsed)) {
+            bodyExamples = parsed.map((x) => String(x ?? "").trim()).filter(Boolean);
+          }
+        } catch {
+          bodyExamples = String(req.body.bodyExamples)
+            .split("|")
+            .map((x: string) => x.trim())
+            .filter(Boolean);
         }
       }
+      const headerFormat =
+        String(req.body?.headerFormat ?? "").trim().toUpperCase() === "IMAGE" ? "IMAGE" : null;
+      let headerHandle = String(req.body?.headerHandle ?? "").trim() || null;
+      const headerSampleUrl = String(req.body?.headerSampleUrl ?? "").trim();
+      if (!name || !bodyText) {
+        res.status(400).json({ error: "name e bodyText obrigatórios" });
+        return;
+      }
+      if (headerFormat === "IMAGE" && !headerHandle && req.file) {
+        const buf = fs.readFileSync(req.file.path);
+        const up = await meta.uploadTemplateHeaderHandle({
+          buffer: buf,
+          mimeType: req.file.mimetype || "image/jpeg",
+          fileName: req.file.originalname || "template_sample.jpg",
+        });
+        if (!up.ok) {
+          res.status(up.status || 400).json({ error: up.text.slice(0, 800) });
+          return;
+        }
+        headerHandle = up.handle;
+      }
+      if (headerFormat === "IMAGE" && !headerHandle && headerSampleUrl) {
+        if (!/^https:\/\//i.test(headerSampleUrl)) {
+          res.status(400).json({ error: "headerSampleUrl deve ser HTTPS público" });
+          return;
+        }
+        const imgRes = await fetch(headerSampleUrl);
+        if (!imgRes.ok) {
+          res.status(400).json({ error: `Não baixou a imagem de exemplo (${imgRes.status})` });
+          return;
+        }
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        const mime =
+          imgRes.headers.get("content-type")?.split(";")[0].trim() ||
+          (headerSampleUrl.toLowerCase().includes(".png") ? "image/png" : "image/jpeg");
+        const up = await meta.uploadTemplateHeaderHandle({
+          buffer: buf,
+          mimeType: mime,
+          fileName: "template_sample.jpg",
+        });
+        if (!up.ok) {
+          res.status(up.status || 400).json({ error: up.text.slice(0, 800) });
+          return;
+        }
+        headerHandle = up.handle;
+      }
+      if (replaceExisting) {
+        const del = await meta.deleteMessageTemplate(name);
+        if (!del.ok && del.status !== 404) {
+          // segue mesmo se não existir; só aborta em erro grave inesperado
+          const msg = del.text.toLowerCase();
+          if (!msg.includes("does not exist") && !msg.includes("not found")) {
+            console.warn("[meta] delete template before recreate", del.status, del.text.slice(0, 200));
+          }
+        }
+      }
+      const r = await meta.createMessageTemplate({
+        name,
+        language,
+        category:
+          category === "MARKETING" || category === "AUTHENTICATION" ? category : "UTILITY",
+        bodyText,
+        bodyExamples,
+        headerFormat,
+        headerHandle,
+      });
+      if (!r.ok) {
+        res.status(r.status || 400).json({ error: r.text.slice(0, 800), data: r.data });
+        return;
+      }
+      res.json({ ok: true, data: r.data });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
-    const r = await meta.createMessageTemplate({
-      name,
-      language,
-      category:
-        category === "MARKETING" || category === "AUTHENTICATION" ? category : "UTILITY",
-      bodyText,
-      bodyExamples,
-      headerFormat,
-      headerHandle,
-    });
-    if (!r.ok) {
-      res.status(r.status || 400).json({ error: r.text.slice(0, 800), data: r.data });
-      return;
-    }
-    res.json({ ok: true, data: r.data });
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
-});
+  });
 
 whatsappRouter.delete("/meta/templates/:name", async (req, res) => {
   try {
@@ -808,24 +911,24 @@ async function setWhatsAppProvider(req: Request, res: Response) {
         provider,
         ...(creds
           ? {
-              gupshupAppName: creds.appName,
-              gupshupSource: creds.source,
-              ...(creds.appId ? { gupshupAppId: creds.appId } : {}),
-              coexistenceEnabled: true,
-              connectedAt: new Date(),
-            }
+            gupshupAppName: creds.appName,
+            gupshupSource: creds.source,
+            ...(creds.appId ? { gupshupAppId: creds.appId } : {}),
+            coexistenceEnabled: true,
+            connectedAt: new Date(),
+          }
           : {}),
       },
       update: {
         provider,
         ...(creds
           ? {
-              gupshupAppName: creds.appName,
-              gupshupSource: creds.source,
-              ...(creds.appId ? { gupshupAppId: creds.appId } : {}),
-              coexistenceEnabled: true,
-              connectedAt: new Date(),
-            }
+            gupshupAppName: creds.appName,
+            gupshupSource: creds.source,
+            ...(creds.appId ? { gupshupAppId: creds.appId } : {}),
+            coexistenceEnabled: true,
+            connectedAt: new Date(),
+          }
           : {}),
       },
     });
@@ -999,8 +1102,8 @@ whatsappRouter.post("/auth/password", async (req, res) => {
     const message = err instanceof Error ? err.message : String(err);
     const code =
       message.includes("incorreta") ||
-      message.includes("diferente") ||
-      message.includes("6 caracteres")
+        message.includes("diferente") ||
+        message.includes("6 caracteres")
         ? 400
         : 500;
     res.status(code).json({ error: message });
@@ -1016,7 +1119,7 @@ whatsappRouter.get("/contacts", async (req, res) => {
       search: typeof req.query.search === "string" ? req.query.search : undefined,
       sellerId:
         (await userCanSeeAllMessages(req.user!.id, req.user!.role)) &&
-        typeof req.query.sellerId === "string"
+          typeof req.query.sellerId === "string"
           ? req.query.sellerId
           : undefined,
     });
@@ -1667,7 +1770,7 @@ whatsappRouter.post("/connection", async (req, res) => {
         return;
       }
       if (liveStatus === "connecting") {
-        await evolution.logoutInstance(instanceName).catch(() => {});
+        await evolution.logoutInstance(instanceName).catch(() => { });
         await new Promise((r) => setTimeout(r, 1500));
       }
     }
@@ -1721,7 +1824,7 @@ whatsappRouter.delete("/connection", async (req, res) => {
     }
     const row = await prisma.whatsAppConnection.findUnique({ where: { id: "default" } });
     if (row && evolution.credentialsOk) {
-      await evolution.logoutInstance(row.instanceName).catch(() => {});
+      await evolution.logoutInstance(row.instanceName).catch(() => { });
     }
     await prisma.whatsAppConnection.update({
       where: { id: "default" },
