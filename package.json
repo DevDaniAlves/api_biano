@@ -13,7 +13,8 @@
     "db:studio": "prisma studio",
     "db:seed": "tsx src/scripts/seed-users.ts",
     "db:seed-demo": "tsx src/scripts/seed-demo-reports.ts",
-    "test": "tsx --test src/services/whatsapp/gupshup.test.ts"
+    "test": "tsx --test src/services/whatsapp/gupshup.test.ts",
+    "diagnose:playwright": "tsx src/scripts/diagnose-playwright.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.3.1",

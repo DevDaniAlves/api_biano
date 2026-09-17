@@ -11,6 +11,7 @@ import {
   normalizePhone,
   parseMoney,
   toYmd,
+  todayYmd,
 } from "../services/csv.js";
 import { vencimentosParaDisparoComFeriados } from "../services/closures.js";
 import { nowInSaoPaulo } from "../services/whatsapp/schedule.js";
@@ -64,6 +65,18 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
   });
   const page = await context.newPage();
 
+  // 3. Listener para respostas de rede da página (page.on('response'))
+  page.on("response", async (response) => {
+    const rUrl = response.url();
+    if (rUrl.includes("extratoParcelasAbertas") || rUrl.includes("findAll") || rUrl.includes("/api")) {
+      const status = response.status();
+      const h = response.headers();
+      console.log(
+        `[playwright-network] Response: ${response.request().method()} ${rUrl.slice(0, 120)} | Status: ${status} | Date: ${h["date"] ?? "-"}`
+      );
+    }
+  });
+
   const now = nowInSaoPaulo();
   const vencimentos = await vencimentosParaDisparoComFeriados(now);
   const filters = buildExtratoApiFiltersForVencimentos(vencimentos, now);
@@ -73,7 +86,7 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
     await login(page);
     await page.screenshot({ path: path.join(screenshotsDir, "01-login.png"), fullPage: true });
 
-    await openReportPage(page);
+    const { finalUrl, filterTextOnScreen } = await openReportPage(page);
     await assertGestaoSession(page, filters[0]!);
 
     const sumarios: unknown[] = [];
@@ -95,6 +108,31 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
     const sumario = sumarios.length === 1 ? sumarios[0] : { sumarios };
     const rows = flattenAndMap(items);
 
+    // 3. Diagnóstico específico: quantas vieram com vencimento = hoje vs vencimento < hoje
+    const hojeYmd = todayYmd(now);
+    const rowsHoje = rows.filter((r) => r.vencimento === hojeYmd);
+    const rowsAntigas = rows.filter((r) => r.vencimento < hojeYmd);
+    const rowsFuturas = rows.filter((r) => r.vencimento > hojeYmd);
+
+    console.log(`[playwright-diag] ================= RELATÓRIO DE VENCIMENTOS =================`);
+    console.log(`[playwright-diag] URL Final da tela: ${finalUrl}`);
+    console.log(`[playwright-diag] Texto de filtro/status na tela: "${filterTextOnScreen || "N/A"}"`);
+    console.log(`[playwright-diag] Data de HOJE considerada: ${hojeYmd}`);
+    console.log(`[playwright-diag] Vencimentos esperados: ${vencimentos.join(", ")}`);
+    console.log(`[playwright-diag] Total de parcelas mapeadas: ${rows.length}`);
+    console.log(`[playwright-diag] Parcelas com vencimento = HOJE (${hojeYmd}): ${rowsHoje.length}`);
+    console.log(`[playwright-diag] Parcelas com vencimento < HOJE (antigas/atrasadas): ${rowsAntigas.length}`);
+    if (rowsAntigas.length > 0) {
+      console.warn(`[playwright-diag] ⚠️ ALERTA: ${rowsAntigas.length} parcela(s) antiga(s) vieram da API!`);
+      for (const antiga of rowsAntigas.slice(0, 10)) {
+        console.warn(
+          `   → Contrato: ${antiga.contrato} | Parcela: ${antiga.parcela} | Vencimento: ${antiga.vencimento} | Cliente: ${antiga.clienteNome}`
+        );
+      }
+    }
+    console.log(`[playwright-diag] Parcelas com vencimento > HOJE (futuras): ${rowsFuturas.length}`);
+    console.log(`[playwright-diag] ===========================================================`);
+
     const rawPath = path.join(tmpDir, `api-extrato-${Date.now()}.json`);
     fs.writeFileSync(
       rawPath,
@@ -102,6 +140,17 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
         {
           filter: filterLabel,
           filterParams: filters,
+          diagnostics: {
+            finalUrl,
+            filterTextOnScreen,
+            hojeYmd,
+            vencimentosEsperados: vencimentos,
+            countTotal: rows.length,
+            countHoje: rowsHoje.length,
+            countAntigas: rowsAntigas.length,
+            countFuturas: rowsFuturas.length,
+            parcelasAntigasAmostra: rowsAntigas.slice(0, 20),
+          },
           sumario,
           findAllTopKeys,
           findAllSample,
@@ -199,12 +248,39 @@ async function skipTwoFactorPrompt(page: Page): Promise<void> {
   }
 }
 
-async function openReportPage(page: Page): Promise<void> {
+async function openReportPage(page: Page): Promise<{ finalUrl: string; filterTextOnScreen: string }> {
   await page.goto(env.CREDIARIO_REPORT_URL, {
     waitUntil: "domcontentloaded",
     timeout: 60_000,
   });
   await page.waitForTimeout(2000);
+  const finalUrl = page.url();
+  console.log(`[playwright-nav] URL final após navegação para relatório: ${finalUrl}`);
+
+  let filterTextOnScreen = "";
+  try {
+    filterTextOnScreen = await page.evaluate(() => {
+      const texts: string[] = [];
+      const els = document.querySelectorAll(
+        "select, .filter, .filtros, [ng-model], [class*='filter'], [class*='vencimento'], input[type='text']"
+      );
+      els.forEach((el) => {
+        const val = (el as HTMLInputElement).value || (el as HTMLElement).innerText || "";
+        const clean = val.trim().replace(/\s+/g, " ");
+        if (clean && clean.length > 0 && clean.length < 80) {
+          texts.push(clean);
+        }
+      });
+      return texts.slice(0, 8).join(" | ");
+    });
+    console.log(
+      `[playwright-nav] Texto de filtro/status identificado na tela: "${filterTextOnScreen || "(nenhum seletor direto)"}"`
+    );
+  } catch {
+    // ignora erro de inspeção DOM
+  }
+
+  return { finalUrl, filterTextOnScreen };
 }
 
 async function assertGestaoSession(page: Page, filter: ExtratoApiFilter): Promise<void> {
@@ -320,12 +396,39 @@ async function callGestaoApiOnce(
   url.searchParams.set("functionName", functionName);
   url.searchParams.set("params", JSON.stringify(params));
 
+  const extractionTimeMs = Date.now();
+  console.log(`[playwright-api] Chamando API ${functionName} com params:`, JSON.stringify(params));
+
   const res = await page.request.get(url.toString(), {
     headers: {
       Accept: "application/json, text/plain, */*",
       Referer: "https://gestao.meucrediario.com.br/",
     },
   });
+
+  const headers = res.headers();
+  const dateHeader = headers["date"];
+  const cacheControl = headers["cache-control"];
+  const ageHeader = headers["age"];
+  console.log(
+    `[playwright-api] Resposta ${functionName} HTTP ${res.status()} | Date: ${dateHeader ?? "N/A"} | Cache-Control: ${cacheControl ?? "N/A"} | Age: ${ageHeader ?? "N/A"}`
+  );
+
+  // 4. Comparar o timestamp da resposta da API com o horário da extração
+  if (dateHeader) {
+    const apiServerTimeMs = new Date(dateHeader).getTime();
+    if (!isNaN(apiServerTimeMs)) {
+      const diffSec = Math.round((extractionTimeMs - apiServerTimeMs) / 1000);
+      console.log(
+        `[playwright-api] Timestamp check: Extração local (${new Date(extractionTimeMs).toISOString()}) vs Server Date (${dateHeader}) → Delta: ${diffSec}s`
+      );
+      if (diffSec > 60) {
+        console.warn(
+          `[playwright-api] ⚠️ ALERTA DE CACHE: A resposta da API está defasada em ${diffSec}s em relação à extração!`
+        );
+      }
+    }
+  }
 
   const text = await res.text().catch(() => "");
   const trimmed = text.trim();
