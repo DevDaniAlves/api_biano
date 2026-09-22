@@ -41,6 +41,7 @@ import {
   getWhatsAppReports,
   handleEvolutionWebhook,
   listContacts,
+  listSavedContacts,
   openContactToAllSellers,
   processAutoInactivity,
   saveContactName,
@@ -1122,6 +1123,18 @@ whatsappRouter.get("/contacts", async (req, res) => {
           typeof req.query.sellerId === "string"
           ? req.query.sellerId
           : undefined,
+    });
+    res.json(contacts);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/contacts/saved", async (req, res) => {
+  try {
+    const contacts = await listSavedContacts({
+      search: typeof req.query.q === "string" ? req.query.q : undefined,
+      take: typeof req.query.take === "string" ? Number(req.query.take) : undefined,
     });
     res.json(contacts);
   } catch (err) {

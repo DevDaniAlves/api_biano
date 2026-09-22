@@ -8,6 +8,8 @@ import { submitSellerPhotoToGallery } from "../gallery.js";
 import { evolution, EvolutionClient } from "./evolution.js";
 import { activeProvider, messagingEnabled, sendOutbound } from "./gateway.js";
 import { meta } from "./meta.js";
+import { needsVideoTranscode, prepareMetaVideoUpload } from "./meta-video.js";
+import { persistBufferUpload } from "./gupshup.js";
 import {
   assumeOnOpen,
   expireStaleRatings,
@@ -626,6 +628,43 @@ export async function listContacts(opts: {
   }));
 }
 
+/** Contatos com nome salvo no CRM — para autocomplete do modal Entrar em contato. */
+export async function listSavedContacts(opts?: { search?: string; take?: number }) {
+  const q = (opts?.search || "").trim();
+  const digits = q.replace(/\D/g, "");
+  const take = Math.min(Math.max(opts?.take ?? 40, 1), 100);
+  const rows = await prisma.whatsAppContact.findMany({
+    where: {
+      AND: [
+        { savedName: { not: null } },
+        { NOT: { savedName: "" } },
+        q
+          ? {
+              OR: [
+                { savedName: { contains: q, mode: "insensitive" } },
+                { name: { contains: q, mode: "insensitive" } },
+                { pushName: { contains: q, mode: "insensitive" } },
+                ...(digits ? [{ phone: { contains: digits } }] : []),
+              ],
+            }
+          : {},
+      ],
+    },
+    orderBy: [{ savedName: "asc" }, { lastMessageAt: "desc" }],
+    take,
+    select: {
+      id: true,
+      phone: true,
+      savedName: true,
+      name: true,
+      pushName: true,
+      status: true,
+      lastMessageAt: true,
+    },
+  });
+  return rows.map((c) => serializeContact(c));
+}
+
 export async function listMessages(
   contactId: string,
   userId: string,
@@ -1192,8 +1231,38 @@ export async function sendImageMessage(opts: {
         ? await sellerPrefix(opts.userId, opts.caption)
         : "";
 
-  const buf = fs.readFileSync(opts.filePath);
-  const b64 = buf.toString("base64");
+  let sendBuf = fs.readFileSync(opts.filePath);
+  let sendMime = opts.mimetype;
+  let sendFileName = opts.fileName;
+  let publicUrl = opts.publicUrl;
+
+  // Grava MP4 no disco do CRM para o player; Meta também exige mp4/3gp.
+  if (mediatype === "video" && needsVideoTranscode(sendMime, sendFileName, sendBuf)) {
+    try {
+      const prep = await prepareMetaVideoUpload({
+        buffer: sendBuf,
+        mimetype: sendMime,
+        fileName: sendFileName,
+      });
+      sendBuf = Buffer.from(prep.buffer);
+      sendMime = prep.mimetype;
+      sendFileName = prep.fileName;
+      const saved = persistBufferUpload({
+        buffer: sendBuf,
+        mimetype: sendMime,
+        fileName: sendFileName,
+      });
+      if (saved) publicUrl = saved;
+      console.log("[wa] vídeo persistido como MP4", publicUrl);
+    } catch (err) {
+      console.warn(
+        "[wa] conversão vídeo para MP4 falhou, seguindo original",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  const b64 = sendBuf.toString("base64");
   const to = contact.remoteJid || contact.phone;
 
   const r = await sendOutbound({
@@ -1205,11 +1274,11 @@ export async function sendImageMessage(opts: {
     bodyPreview: caption || fallback,
     media: {
       mediatype,
-      link: opts.publicUrl || undefined,
+      link: publicUrl || undefined,
       base64: b64,
-      mimetype: opts.mimetype,
+      mimetype: sendMime,
       caption,
-      fileName: opts.fileName,
+      fileName: sendFileName,
     },
   });
   if (!r.ok) throw new Error(`Falha WhatsApp mídia: ${r.error}`);
@@ -1220,7 +1289,7 @@ export async function sendImageMessage(opts: {
     contactId: contact.id,
     type: mediatype,
     body,
-    mediaUrl: opts.publicUrl,
+    mediaUrl: publicUrl,
     sentById: opts.userId,
     externalId,
     clientKey: opts.clientKey ?? null,
@@ -1235,10 +1304,10 @@ export async function sendImageMessage(opts: {
   });
 
   // Fotos de vendedor → galeria pendente (admin aprova o que vai pra LP).
-  if (mediatype === "image" && role === "seller" && opts.publicUrl) {
+  if (mediatype === "image" && role === "seller" && publicUrl) {
     try {
       await submitSellerPhotoToGallery({
-        imageUrl: opts.publicUrl,
+        imageUrl: publicUrl,
         caption: opts.caption ?? null,
         submittedById: opts.userId,
         sourceMessageId: msg.id,
@@ -1399,15 +1468,6 @@ export async function resolveContact(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  if (contact.webhookPaused) {
-    throw new Error("Cliente em atendimento manual — volte ao webhook antes de finalizar");
-  }
-  const metaWindow = getMetaWindowStatus(contact);
-  if (metaWindow.open) {
-    throw new Error(
-      `A conversa só pode ser finalizada após a janela de 24h da Meta expirar. Restam ${metaWindow.hours}h ${metaWindow.minutes}min desde a última mensagem do cliente.`
-    );
-  }
   // Segurança: fluxo de inatividade nunca pede nota (evita bug legado autoResolve → resolveContact).
   if (contact.inactivityWarnedAt && contact.status === "human") {
     return resolveContactForInactivity(contactId);
@@ -1419,7 +1479,6 @@ export async function resolveContact(contactId: string) {
   const claimed = await prisma.whatsAppContact.updateMany({
     where: {
       id: contactId,
-      webhookPaused: false,
       status: { in: ["human", "waiting"] },
     },
     data: {
@@ -1428,6 +1487,7 @@ export async function resolveContact(contactId: string) {
       rating: null,
       offeredToId: null,
       openToAll: false,
+      webhookPaused: false,
     },
   });
   if (claimed.count === 0) {
@@ -1459,6 +1519,7 @@ export async function resolveContact(contactId: string) {
     data: {
       lastMessageAt: new Date(),
       lastMessagePreview: RATING_MSG.slice(0, 120),
+      webhookPaused: false,
     },
   });
 }

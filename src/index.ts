@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import cors from "cors";
 import express from "express";
 import swaggerUi from "swagger-ui-express";
@@ -21,14 +22,19 @@ app.use(
   "/uploads",
   express.static(UPLOADS_DIR, {
     setHeaders(res, filePath) {
+      const base = path.basename(filePath).toLowerCase();
       if (filePath.endsWith(".ogg") || filePath.endsWith(".opus")) {
         res.setHeader("Content-Type", "audio/ogg; codecs=opus");
       } else if (filePath.endsWith(".webm")) {
-        res.setHeader("Content-Type", "audio/webm");
+        // Áudio gravado no CRM costuma ser audio-*.webm; vídeo = video-*.webm / demais.
+        const asAudio = base.startsWith("audio-") || base.includes("-audio-");
+        res.setHeader("Content-Type", asAudio ? "audio/webm" : "video/webm");
       } else if (filePath.endsWith(".m4a")) {
         res.setHeader("Content-Type", "audio/mp4");
       } else if (filePath.endsWith(".mp3")) {
         res.setHeader("Content-Type", "audio/mpeg");
+      } else if (filePath.endsWith(".mp4")) {
+        res.setHeader("Content-Type", "video/mp4");
       }
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     },
