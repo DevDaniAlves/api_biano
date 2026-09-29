@@ -1561,12 +1561,6 @@ export async function resolveContactForInactivity(contactId: string) {
   if (contact.status !== "human") {
     throw new Error("Só é possível encerrar por inatividade durante o atendimento humano");
   }
-  const metaWindow = getMetaWindowStatus(contact);
-  if (metaWindow.open) {
-    throw new Error(
-      `A conversa só pode ser finalizada após a janela de 24h da Meta expirar. Restam ${metaWindow.hours}h ${metaWindow.minutes}min desde a última mensagem do cliente.`
-    );
-  }
 
   let externalId: string | null = null;
   if (await messagingEnabled()) {
@@ -1737,6 +1731,7 @@ export async function autoResolveInactivity(contactId: string) {
   if (direction !== "out") return false;
   const flags = contactFlags(contact);
   if (!flags.canResolveInactivity) return false;
+  if (flags.metaWindowOpen) return false;
   if (!(await messagingEnabled())) return false;
 
   await resolveContactForInactivity(contactId);
