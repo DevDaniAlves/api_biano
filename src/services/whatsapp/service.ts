@@ -88,8 +88,13 @@ function waitingOnSeller(contact: { lastMessageDirection?: "in" | "out" | null }
   return contact.lastMessageDirection === "in";
 }
 
-const RATING_MSG =
-  "Como foi o atendimento? Responda com uma nota de *1* a *5* (sendo 5 excelente). Obrigado!";
+function finishThanksMsg(savedName: string | null) {
+  const first = savedName?.trim().split(/\s+/)[0];
+  const greeting = first
+    ? `Muito obrigado, ${first.charAt(0).toUpperCase()}${first.slice(1).toLowerCase()}!`
+    : "Muito obrigado!";
+  return `${greeting} Quando precisar, estaremos à disposição. Será um prazer atender você novamente.`;
+}
 
 const INACTIVITY_RECOVERY_MSG = "Olá! Você ainda está por aí? 😊";
 
@@ -1237,7 +1242,7 @@ export async function sendImageMessage(opts: {
   let publicUrl = opts.publicUrl;
 
   // Grava MP4 no disco do CRM para o player; Meta também exige mp4/3gp.
-  if (mediatype === "video" && needsVideoTranscode(sendMime, sendFileName, sendBuf)) {
+  if (mediatype === "video" && (await needsVideoTranscode(sendMime, sendFileName, sendBuf))) {
     try {
       const prep = await prepareMetaVideoUpload({
         buffer: sendBuf,
@@ -1463,12 +1468,11 @@ export async function assignContact(opts: {
   return updated;
 }
 
-/** Finaliza atendimento e pede avaliação (1–5). Nunca usar após aviso de inatividade. */
+/** Finaliza atendimento com mensagem de agradecimento. Após aviso de inatividade usa a msg de inatividade. */
 export async function resolveContact(contactId: string) {
   const contact = await prisma.whatsAppContact.findUniqueOrThrow({
     where: { id: contactId },
   });
-  // Segurança: fluxo de inatividade nunca pede nota (evita bug legado autoResolve → resolveContact).
   if (contact.inactivityWarnedAt && contact.status === "human") {
     return resolveContactForInactivity(contactId);
   }
@@ -1482,18 +1486,23 @@ export async function resolveContact(contactId: string) {
       status: { in: ["human", "waiting"] },
     },
     data: {
-      status: "awaiting_rating",
-      ratingAskedAt: new Date(),
+      status: "closed",
+      ratingAskedAt: null,
       rating: null,
       offeredToId: null,
       openToAll: false,
       webhookPaused: false,
+      inactivityWarnedAt: null,
+      sellerInactivityNotifiedAt: null,
+      botMenuStep: "department",
+      unreadCount: 0,
     },
   });
   if (claimed.count === 0) {
     return prisma.whatsAppContact.findUniqueOrThrow({ where: { id: contactId } });
   }
 
+  const text = finishThanksMsg(contact.savedName);
   let externalId: string | null = null;
   if (await messagingEnabled()) {
     const r = await sendOutbound({
@@ -1501,7 +1510,7 @@ export async function resolveContact(contactId: string) {
       source: "system",
       contactId,
       kind: "text",
-      text: RATING_MSG,
+      text,
       category: "service",
     });
     externalId = r.externalId;
@@ -1510,7 +1519,7 @@ export async function resolveContact(contactId: string) {
   await upsertOutboundMessage({
     contactId,
     type: "text",
-    body: RATING_MSG,
+    body: text,
     externalId,
   });
 
@@ -1518,7 +1527,8 @@ export async function resolveContact(contactId: string) {
     where: { id: contactId },
     data: {
       lastMessageAt: new Date(),
-      lastMessagePreview: RATING_MSG.slice(0, 120),
+      lastMessagePreview: text.slice(0, 120),
+      lastMessageDirection: "out",
       webhookPaused: false,
     },
   });

@@ -42,6 +42,8 @@ export interface ScrapeApiResult {
   findAllTopKeys: string[];
   /** Resposta bruta da 1ª página (para dump). */
   findAllSample: unknown;
+  /** Vencimentos consultados (para reconciliação de pendentes). */
+  vencimentos: string[];
 }
 
 /**
@@ -175,6 +177,7 @@ export async function scrapeExtratoHojeApi(): Promise<ScrapeApiResult> {
       findAllTopKeys,
       findAllSample,
       filterLabel,
+      vencimentos,
     };
   } catch (err) {
     await page.screenshot({ path: path.join(screenshotsDir, "erro.png"), fullPage: true }).catch(() => {});

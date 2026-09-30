@@ -8,8 +8,9 @@ import { evolution } from "./whatsapp/evolution.js";
 
 export async function upsertBoletosFromCsv(
   rows: CsvBoletoRow[],
-  jobId?: string
-): Promise<{ upserted: number }> {
+  jobId?: string,
+  reconcileVencimentos?: string[]
+): Promise<{ upserted: number; removedStale?: number }> {
   let upserted = 0;
 
   for (const row of rows) {
@@ -63,7 +64,24 @@ export async function upsertBoletosFromCsv(
     upserted++;
   }
 
-  return { upserted };
+  let removedStale = 0;
+  if (jobId && reconcileVencimentos && reconcileVencimentos.length > 0) {
+    const deleted = await prisma.boleto.deleteMany({
+      where: {
+        status: "pending",
+        vencimento: { in: reconcileVencimentos },
+        jobId: { not: jobId },
+      },
+    });
+    removedStale = deleted.count;
+    if (removedStale > 0) {
+      console.log(
+        `[boletos] Reconciliação: ${removedStale} boleto(s) pendente(s) obsoleto(s)/quitados foram removidos para [${reconcileVencimentos.join(", ")}]`
+      );
+    }
+  }
+
+  return { upserted, removedStale };
 }
 
 function firstName(full: string): string {

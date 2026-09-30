@@ -73,7 +73,7 @@ async function executeJob(jobId: string, token: number): Promise<void> {
   });
 
   try {
-    const { rows, rawPath, sumario, itemsRawCount, findAllTopKeys, filterLabel } =
+    const { rows, rawPath, sumario, itemsRawCount, findAllTopKeys, filterLabel, vencimentos } =
       await scrapeExtratoHojeApi();
     if (token !== scrapeGeneration) {
       await markCancelled(jobId);
@@ -102,7 +102,7 @@ async function executeJob(jobId: string, token: number): Promise<void> {
       return;
     }
 
-    const { upserted } = await upsertBoletosFromCsv(rows, jobId);
+    const { upserted, removedStale } = await upsertBoletosFromCsv(rows, jobId, vencimentos);
     if (token !== scrapeGeneration) {
       await markCancelled(jobId);
       return;

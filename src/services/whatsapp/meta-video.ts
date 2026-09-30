@@ -22,13 +22,50 @@ export function looksLikeWebm(buffer: Buffer): boolean {
   );
 }
 
-/** webm/mov/avi/quicktime (e mp4 “falso”) → precisa transcodificar. */
-export function needsVideoTranscode(mimetype?: string, fileName?: string, buffer?: Buffer): boolean {
+/**
+ * webm/mov/avi/quicktime (e mp4 “falso”) → precisa transcodificar.
+ * MP4 em HEVC/H.265 (comum em celular) também: navegadores do CRM não reproduzem.
+ */
+export async function needsVideoTranscode(
+  mimetype?: string,
+  fileName?: string,
+  buffer?: Buffer
+): Promise<boolean> {
   if (buffer && looksLikeWebm(buffer)) return true;
-  if (isMetaAcceptedVideoMime(mimetype, fileName) && !(buffer && looksLikeWebm(buffer))) {
-    return false;
+  if (!isMetaAcceptedVideoMime(mimetype, fileName)) return true;
+  if (!buffer) return false;
+  const codec = await probeVideoCodec(buffer, inputExt(mimetype, fileName, buffer));
+  return codec !== null && codec !== "h264";
+}
+
+/** Codec do 1º stream de vídeo (ex.: "h264", "hevc"); null se não conseguir detectar. */
+export async function probeVideoCodec(input: Buffer, srcExt: string): Promise<string | null> {
+  let ffmpegPath: string;
+  try {
+    ffmpegPath = await ffmpegBin();
+  } catch {
+    return null;
   }
-  return true;
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const inPath = path.join(os.tmpdir(), `biano-wa-probe-${id}.${srcExt || "bin"}`);
+  await fs.writeFile(inPath, input);
+  try {
+    const stderr = await new Promise<string>((resolve) => {
+      const proc = spawn(ffmpegPath, ["-hide_banner", "-i", inPath], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let out = "";
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+      });
+      proc.on("error", () => resolve(""));
+      proc.on("close", () => resolve(out));
+    });
+    const m = stderr.match(/Stream #[^\n]*Video:\s*([a-z0-9_]+)/i);
+    return m ? m[1].toLowerCase() : null;
+  } finally {
+    await fs.unlink(inPath).catch(() => {});
+  }
 }
 
 function inputExt(mimetype?: string, fileName?: string, buffer?: Buffer): string {
@@ -108,7 +145,7 @@ export async function prepareMetaVideoUpload(opts: {
   fileName?: string;
 }): Promise<{ buffer: Buffer; mimetype: string; fileName: string }> {
   let { buffer, mimetype, fileName } = opts;
-  if (needsVideoTranscode(mimetype, fileName, buffer)) {
+  if (await needsVideoTranscode(mimetype, fileName, buffer)) {
     buffer = await convertVideoToMp4(buffer, inputExt(mimetype, fileName, buffer));
     mimetype = "video/mp4";
     fileName = (fileName || "video").replace(/\.[a-z0-9]+$/i, "") + ".mp4";
