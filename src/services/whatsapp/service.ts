@@ -991,6 +991,7 @@ export async function sendTextMessage(opts: {
 
 export type OutreachTemplateKind =
   | "continuidade_pedido"
+  | "cobranca_atrasado"
   | "retomada_atendimento"
   | "abordagem_novidades"
   | "produto_disponivel";
@@ -1000,6 +1001,7 @@ const OUTREACH_TEMPLATES: Record<
   { label: string; category: "utility" | "marketing"; needsProduct: boolean }
 > = {
   continuidade_pedido: { label: "Continuidade do pedido", category: "utility", needsProduct: false },
+  cobranca_atrasado: { label: "Cobrança em atraso", category: "utility", needsProduct: false },
   retomada_atendimento: { label: "Retomada de atendimento", category: "marketing", needsProduct: false },
   abordagem_novidades: { label: "Abordagem de novidades", category: "marketing", needsProduct: false },
   produto_disponivel: { label: "Produto disponível", category: "marketing", needsProduct: true },
@@ -1019,6 +1021,7 @@ function normalizeOutreachPhone(raw: string): string {
 
 function parseOutreachTemplate(raw: string | undefined | null): OutreachTemplateKind {
   const name = (raw || "continuidade_pedido").trim().toLowerCase();
+  if (name === "cobranca_atrasado") return "cobranca_atrasado";
   if (name === "retomada_atendimento") return "retomada_atendimento";
   if (name === "abordagem_novidades") return "abordagem_novidades";
   if (
