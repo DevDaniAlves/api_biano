@@ -670,6 +670,79 @@ export async function listSavedContacts(opts?: { search?: string; take?: number 
   return rows.map((c) => serializeContact(c));
 }
 
+/** Agenda de contatos: todos os números (com ou sem nome salvo), para buscar/editar. */
+export async function listContactDirectory(opts?: { search?: string; take?: number }) {
+  const q = (opts?.search || "").trim();
+  const digits = q.replace(/\D/g, "");
+  const take = Math.min(Math.max(opts?.take ?? 100, 1), 300);
+  const rows = await prisma.whatsAppContact.findMany({
+    where: q
+      ? {
+          OR: [
+            { savedName: { contains: q, mode: "insensitive" } },
+            { name: { contains: q, mode: "insensitive" } },
+            { pushName: { contains: q, mode: "insensitive" } },
+            ...(digits ? [{ phone: { contains: digits } }] : []),
+          ],
+        }
+      : {},
+    orderBy: [{ savedName: { sort: "asc", nulls: "last" } }, { lastMessageAt: "desc" }],
+    take,
+    select: {
+      id: true,
+      phone: true,
+      savedName: true,
+      name: true,
+      pushName: true,
+      status: true,
+      lastMessageAt: true,
+    },
+  });
+  return rows.map((c) => serializeContact(c));
+}
+
+/** Cria (ou atualiza, se o número já existe) um contato da agenda. */
+export async function createDirectoryContact(opts: { name: string; phone: string }) {
+  const name = opts.name.trim().slice(0, 60);
+  if (!name) throw new Error("Informe o nome do contato");
+  const phone = normalizeOutreachPhone(opts.phone);
+  const c = await prisma.whatsAppContact.upsert({
+    where: { phone },
+    create: {
+      phone,
+      remoteJid: `${phone}@s.whatsapp.net`,
+      savedName: name,
+      name,
+      status: "closed",
+    },
+    update: { savedName: name, name },
+  });
+  return serializeContact(c);
+}
+
+/** Edita nome e/ou número de um contato. */
+export async function updateDirectoryContact(
+  id: string,
+  opts: { name?: string; phone?: string }
+) {
+  const data: { savedName?: string; name?: string; phone?: string; remoteJid?: string } = {};
+  if (opts.name !== undefined) {
+    const name = opts.name.trim().slice(0, 60);
+    if (!name) throw new Error("Informe o nome do contato");
+    data.savedName = name;
+    data.name = name;
+  }
+  if (opts.phone !== undefined) {
+    const phone = normalizeOutreachPhone(opts.phone);
+    const taken = await prisma.whatsAppContact.findUnique({ where: { phone } });
+    if (taken && taken.id !== id) throw new Error("Já existe um contato com esse número");
+    data.phone = phone;
+    data.remoteJid = `${phone}@s.whatsapp.net`;
+  }
+  const c = await prisma.whatsAppContact.update({ where: { id }, data });
+  return serializeContact(c);
+}
+
 export async function listMessages(
   contactId: string,
   userId: string,

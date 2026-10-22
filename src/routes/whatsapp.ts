@@ -42,6 +42,9 @@ import {
   handleEvolutionWebhook,
   listContacts,
   listSavedContacts,
+  listContactDirectory,
+  createDirectoryContact,
+  updateDirectoryContact,
   openContactToAllSellers,
   processAutoInactivity,
   saveContactName,
@@ -1139,6 +1142,46 @@ whatsappRouter.get("/contacts/saved", async (req, res) => {
     res.json(contacts);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.get("/contacts/directory", async (req, res) => {
+  try {
+    res.json(
+      await listContactDirectory({
+        search: typeof req.query.q === "string" ? req.query.q : undefined,
+        take: typeof req.query.take === "string" ? Number(req.query.take) : undefined,
+      })
+    );
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.post("/contacts/directory", async (req, res) => {
+  try {
+    res.json(
+      await createDirectoryContact({
+        name: String(req.body?.name ?? ""),
+        phone: String(req.body?.phone ?? ""),
+      })
+    );
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+whatsappRouter.patch("/contacts/directory/:id", async (req, res) => {
+  try {
+    res.json(
+      await updateDirectoryContact(String(req.params.id), {
+        name: req.body?.name === undefined ? undefined : String(req.body.name),
+        phone: req.body?.phone === undefined ? undefined : String(req.body.phone),
+      })
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(msg.includes("not found") || msg.includes("No record") ? 404 : 400).json({ error: msg });
   }
 });
 
