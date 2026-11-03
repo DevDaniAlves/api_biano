@@ -1563,6 +1563,7 @@ export async function resolveContact(contactId: string) {
     },
     data: {
       status: "closed",
+      closedAt: new Date(),
       ratingAskedAt: null,
       rating: null,
       offeredToId: null,

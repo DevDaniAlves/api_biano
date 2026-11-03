@@ -1214,6 +1214,15 @@ export async function processInboundBot(contactId: string, body: string | null, 
     });
     if (existing.webhookPaused) return;
 
+    // Chamado finalizado pelo atendente há pouco: ignora resposta imediata do cliente.
+    if (existing.status === "closed" && existing.closedAt) {
+      const elapsed = Date.now() - existing.closedAt.getTime();
+      if (elapsed < env.CLOSED_REPLY_IGNORE_MINUTES * 60_000) {
+        console.log(`[bot] chamado finalizado há ${Math.round(elapsed / 1000)}s — ignorando msg de ${existing.phone}`);
+        return;
+      }
+    }
+
     // Já na fila aberta: só registra msgs (webhook), bot não interfere.
     if (existing.status === "waiting" && existing.openToAll) {
       return;

@@ -90,6 +90,8 @@ const schema = z.object({
   INACTIVITY_RESOLVE_MINUTES: z.coerce.number().default(10),
   /** Minutos sem msg do cliente no fluxo Financeiro → fecha e reinicia. 0 = off. Atendimento não auto-fecha. */
   CLIENT_IDLE_CLOSE_MINUTES: z.coerce.number().default(5),
+  /** Após o atendente finalizar, o bot ignora msgs do cliente por N minutos. */
+  CLOSED_REPLY_IGNORE_MINUTES: z.coerce.number().default(20),
   /** Horas sem mensagem (qualquer lado) para fechar a conversa sem enviar texto. */
   IDLE_CLOSE_HOURS: z.coerce.number().default(24),
   /** Chave Pix padrão (CNPJ) — sobrescrito pelo cadastro em Conectar WhatsApp. */

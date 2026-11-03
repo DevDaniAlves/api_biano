@@ -255,7 +255,9 @@ model WhatsAppContact {
   sellerInactivityNotifiedAt DateTime?
   rating               Int?
   ratingAskedAt        DateTime?
-  unreadCount          Int               @default(0)
+  /** Quando o atendente finalizou o chamado — bot ignora msgs do cliente nos 20min seguintes. */
+  closedAt             DateTime?
+  unreadCount         Int               @default(0)
   /** Atendimento pelo app WhatsApp — bot não responde */
   webhookPaused        Boolean           @default(false)
   createdAt            DateTime          @default(now())
