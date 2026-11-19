@@ -450,3 +450,15 @@ model BusinessClosure {
 
   @@index([dateYmd])
 }
+
+/// Rota de webhook Meta por phone_number_id: encaminha o evento ao targetUrl (ex.: Caristeo).
+model WhatsAppWebhookRoute {
+  id            String   @id @default(uuid())
+  phoneNumberId String   @unique
+  displayPhone  String?
+  targetUrl     String
+  active        Boolean  @default(true)
+  label         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}

@@ -17,7 +17,15 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const app = express();
 app.use(cors({ origin: env.CORS_ORIGIN.split(",").map((s) => s.trim()) }));
-app.use(express.json({ limit: "12mb" }));
+app.use(
+  express.json({
+    limit: "12mb",
+    // Guarda os bytes originais (necessário para reenviar webhooks Meta sem reserializar).
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  })
+);
 app.use(
   "/uploads",
   express.static(UPLOADS_DIR, {

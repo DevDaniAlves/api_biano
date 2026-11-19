@@ -1,0 +1,452 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BoletoStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+enum JobStatus {
+  queued
+  running
+  success
+  failed
+}
+
+enum UserRole {
+  admin
+  seller
+}
+
+enum ContactStatus {
+  bot
+  waiting
+  human
+  awaiting_rating
+  closed
+}
+
+enum MessageDirection {
+  in
+  out
+}
+
+/** Etapa do menu do bot */
+enum BotMenuStep {
+  department
+  sellers
+  finance_sellers
+  /** Fora do horário: financeiro aguardando digite 1 para entrar na fila */
+  finance_after_hours
+  /** Link do catálogo enviado — 0 volta ao menu principal */
+  catalog
+  /** Fora do horário: atendimento aguardando resposta antes de entrar na fila */
+  after_hours_atendimento
+}
+
+/** Fluxo/setor escolhido pelo cliente no bot */
+enum ContactBotFlow {
+  atendimento
+  financeiro
+}
+
+model ScrapeJob {
+  id           String    @id @default(cuid())
+  status       JobStatus @default(queued)
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  message      String?
+  rowsFound    Int       @default(0)
+  rowsUpserted Int       @default(0)
+  csvPath      String?
+  createdAt    DateTime  @default(now())
+  boletos      Boleto[]
+}
+
+model Boleto {
+  id               String       @id @default(cuid())
+  externalId       String
+  cpf              String
+  clienteNome      String
+  clienteTelefone  String
+  codigoCliente    String
+  risco            String?
+  contrato         String
+  dataVenda        String?
+  parcela          String
+  vencimento       String
+  valorVencimento  Float
+  totalPago        Float?
+  valorQuitacao    Float?
+  capitalAberto    Float?
+  descontoQuitacao Float?
+  situacao         String?
+  status           BoletoStatus @default(pending)
+  dispatchError    String?
+  dispatchedAt     DateTime?
+  collectedAt      DateTime     @default(now())
+  jobId            String?
+  job              ScrapeJob?   @relation(fields: [jobId], references: [id])
+
+  @@unique([contrato, parcela, vencimento])
+  @@index([vencimento, status])
+  @@index([status])
+}
+
+model User {
+  id            String              @id @default(cuid())
+  name          String
+  email         String              @unique
+  passwordHash  String
+  role          UserRole            @default(seller)
+  active        Boolean             @default(true)
+  /** Vê todas as conversas (sem recorte de fila) e pode assumir para registrar histórico. */
+  seeAllMessages Boolean            @default(false)
+  /** Aparece no menu do bot para o cliente escolher (independente de Ver todas). */
+  showInAttendantList Boolean       @default(true)
+  /** Fluxo Atendimento (menu após opção 1) */
+  flowAtendimento     Boolean       @default(true)
+  /** Fluxo Financeiro (menu após opção 2 + info crediário) */
+  flowFinanceiro      Boolean       @default(false)
+  /** CRUD do catálogo (produtos/fotos) sem ser admin. */
+  canManageCatalog    Boolean       @default(false)
+  createdAt     DateTime            @default(now())
+  agents        WhatsAppAgent[]
+  assigned      WhatsAppContact[]   @relation("AssignedContacts")
+  offered       WhatsAppContact[]   @relation("OfferedContacts")
+  messages      WhatsAppMessage[]
+  unavailabilities UserUnavailability[]
+  scheduleSlots UserScheduleSlot[]
+  leaves        UserLeave[]
+  pushSubs      PushSubscription[]
+  gallerySubmitted GalleryImage[] @relation("GallerySubmitted")
+  galleryReviewed  GalleryImage[] @relation("GalleryReviewed")
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/** Intervalos de atendimento semanais (ex.: seg 08:00–12:00 e 13:00–18:00). */
+model UserScheduleSlot {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /** 0=Dom … 6=Sáb (JS getDay) */
+  dayOfWeek Int
+  startMin  Int
+  endMin    Int
+  createdAt DateTime @default(now())
+
+  @@index([userId, dayOfWeek])
+}
+
+/** Folga / férias / outros (intervalo de datas). */
+model UserLeave {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /** ferias | folga | outro */
+  type      String   @default("outro")
+  label     String?
+  startsAt  DateTime
+  endsAt    DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId, startsAt, endsAt])
+}
+
+/** Janelas semanais de inatividade (legado / bloqueio pontual recorrente). */
+model UserUnavailability {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /** 0=Dom … 6=Sáb (JS getDay) */
+  dayOfWeek Int
+  startMin  Int
+  endMin    Int
+  label     String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, dayOfWeek])
+}
+
+model WhatsAppQueue {
+  id               String            @id @default(cuid())
+  name             String
+  /** índice do próximo agente na sequência (round-robin) */
+  nextAgentIndex   Int               @default(0)
+  createdAt        DateTime          @default(now())
+  agents           WhatsAppAgent[]
+  contacts         WhatsAppContact[]
+}
+
+model WhatsAppAgent {
+  id        String         @id @default(cuid())
+  userId    String
+  queueId   String?
+  sortOrder Int            @default(0)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  queue     WhatsAppQueue? @relation(fields: [queueId], references: [id], onDelete: SetNull)
+  createdAt DateTime       @default(now())
+
+  @@unique([userId, queueId])
+  @@index([queueId, sortOrder])
+}
+
+model WhatsAppContact {
+  id                   String            @id @default(cuid())
+  phone                String            @unique
+  remoteJid            String?
+  /** @deprecated legado — preferir savedName/pushName; exibição usa savedName ?? pushName ?? name */
+  name                 String?
+  /** Nome definido pelo atendente na plataforma */
+  savedName            String?
+  /** Nome de perfil vindo do WhatsApp (push name) */
+  pushName             String?
+  status               ContactStatus     @default(bot)
+  botMenuStep          BotMenuStep       @default(department)
+  /** Setor do atendimento (após escolha no menu departamento) */
+  botFlow              ContactBotFlow?
+  assignedToId         String?
+  assignedTo           User?             @relation("AssignedContacts", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedAt           DateTime?
+  /** Oferta atual da fila (vendedor tem 10 min) */
+  offeredToId          String?
+  offeredTo            User?             @relation("OfferedContacts", fields: [offeredToId], references: [id], onDelete: SetNull)
+  offeredAt            DateTime?
+  /** Primeira oferta exclusiva (não apaga no expire/assume — métricas) */
+  firstOfferedAt       DateTime?
+  firstOfferedToId     String?
+  /** Quando ficou disponível para qualquer vendedor */
+  openedToAllAt        DateTime?
+  /** Segundos até assumir (calculado no assume) */
+  assumeWaitSeconds    Int?
+  openToAll            Boolean           @default(false)
+  queueId              String?
+  queue                WhatsAppQueue?    @relation(fields: [queueId], references: [id], onDelete: SetNull)
+  lastMessageAt        DateTime?
+  lastMessagePreview   String?
+  /** Quem deve responder: última msg in = aguardando vendedor; out = aguardando cliente. */
+  lastMessageDirection MessageDirection?
+  lastClientMessageAt  DateTime?
+  /** Disparo automático de cobrança — exibe badge LEMBRETE_BOLETO até o cliente responder. */
+  boletoReminderAt     DateTime?
+  inactivityWarnedAt   DateTime?
+  /** Push in-app enviado — cliente aguardando vendedor (sem msg automática ao cliente). */
+  sellerInactivityNotifiedAt DateTime?
+  rating               Int?
+  ratingAskedAt        DateTime?
+  /** Quando o atendente finalizou o chamado — bot ignora msgs do cliente nos 20min seguintes. */
+  closedAt             DateTime?
+  unreadCount         Int               @default(0)
+  /** Atendimento pelo app WhatsApp — bot não responde */
+  webhookPaused        Boolean           @default(false)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  messages             WhatsAppMessage[]
+}
+
+model WhatsAppMessage {
+  id               String           @id @default(cuid())
+  contactId        String
+  contact          WhatsAppContact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  externalId       String?
+  /** Key do cliente (1 request = 1 imagem); evita colapsar multi-foto. */
+  clientKey        String?
+  direction        MessageDirection
+  type             String           @default("text")
+  body             String?
+  mediaUrl         String?
+  quotedExternalId String?
+  quotedBody       String?
+  quotedType       String?
+  quotedMediaUrl   String?
+  sentById         String?
+  sentBy           User?            @relation(fields: [sentById], references: [id], onDelete: SetNull)
+  createdAt        DateTime         @default(now())
+
+  @@unique([contactId, externalId])
+  @@unique([contactId, clientKey])
+  @@index([contactId, createdAt])
+}
+
+/** Auditoria de envio (custo Meta out/2026): boleto, bot, agente, sistema. */
+model WhatsAppSendLog {
+  id           String    @id @default(cuid())
+  provider     String
+  source       String
+  direction    String    @default("out")
+  phone        String
+  externalId   String?
+  kind         String    @default("text")
+  templateName String?
+  category     String?
+  pricingType  String?
+  billable     Boolean   @default(false)
+  status       String    @default("queued")
+  error        String?
+  contactId    String?
+  boletoId     String?
+  bodyPreview  String?
+  createdAt    DateTime  @default(now())
+  deliveredAt  DateTime?
+
+  @@index([createdAt])
+  @@index([provider, createdAt])
+  @@index([category, createdAt])
+  @@index([source, createdAt])
+  @@index([externalId])
+  @@index([boletoId])
+  @@index([contactId])
+}
+
+/** Fluxo/menu do bot (singleton lógico — um registro). */
+model WhatsAppFlow {
+  id              String   @id @default("default")
+  welcomeMessage  String   @default("Olá! Bem-vindo à Calangus. Escolha um atendente:")
+  closedMessage   String   @default("Nosso horário de atendimento se encerrou. Atenderemos assim que possível.\n\n⏰ Horário de atendimento\n\n🗓️ Segunda a sexta: 08h às 18h30\n🗓️ Sábado: 08h às 16h30")
+  menuEnabled     Boolean  @default(true)
+  /** [{ key, label, action: "agent"|"queue", userId?, queueId? }] */
+  options         Json     @default("[]")
+  updatedAt       DateTime @updatedAt
+}
+
+/** Instância Evolution + provider Meta/Gupshup (singleton). */
+model WhatsAppConnection {
+  id                   String    @id @default("default")
+  instanceName         String    @default("")
+  status               String    @default("disconnected")
+  lastQr               String?
+  lastPairingCode      String?
+  /** evolution | meta | gupshup — sobrescreve WHATSAPP_PROVIDER do .env quando setado. */
+  provider             String    @default("evolution")
+  metaPhoneNumberId    String?
+  metaWabaId           String?
+  gupshupAppName       String?
+  gupshupSource        String?
+  gupshupWabaId        String?
+  gupshupAppId         String?
+  coexistenceEnabled   Boolean   @default(false)
+  /** Menus/respostas automáticas do CRM (departamento, vendedores, etc.). */
+  botEnabled           Boolean   @default(true)
+  /** Localização fixa da loja para envio no atendimento. */
+  storeLatitude        Float?
+  storeLongitude       Float?
+  storeLocationName    String?
+  storeLocationAddress String?
+  storeLocationMessage String?
+  /** Chave Pix fixa para envio no atendimento. */
+  pixKey               String?
+  pixKeyType           String?   @default("CNPJ")
+  pixMerchantName      String?
+  pixMessage           String?
+  connectedAt          DateTime?
+  updatedAt            DateTime  @updatedAt
+}
+
+model Product {
+  id          String         @id @default(cuid())
+  name        String
+  description String?
+  price       Float
+  /** Legado / capa — espelha a 1ª foto quando houver images. */
+  imageUrl    String?
+  active      Boolean        @default(true)
+  sortOrder   Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  images      ProductImage[]
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  imageUrl  String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([productId, sortOrder])
+}
+
+model CatalogSettings {
+  id                String   @id @default("default")
+  underConstruction Boolean  @default(false)
+  updatedAt         DateTime @updatedAt
+}
+
+/** Fotos enviadas por vendedores (CRM) → aprovação → LP. */
+enum GalleryImageStatus {
+  pending
+  approved
+  rejected
+}
+
+model GalleryImage {
+  id              String             @id @default(cuid())
+  imageUrl        String
+  caption         String?
+  status          GalleryImageStatus @default(pending)
+  sortOrder       Int                @default(0)
+  submittedById   String?
+  submittedBy     User?              @relation("GallerySubmitted", fields: [submittedById], references: [id], onDelete: SetNull)
+  reviewedById    String?
+  reviewedBy      User?              @relation("GalleryReviewed", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt      DateTime?
+  /** Mensagem WhatsApp de origem (opcional). */
+  sourceMessageId String?            @unique
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([status, sortOrder])
+  @@index([submittedById])
+}
+
+/** Agendamento do Gestor: scrape Playwright + disparo (horário Brasília). */
+model GestorAutomation {
+  id                  String    @id @default("default")
+  enabled             Boolean   @default(false)
+  /** HH:mm em America/Sao_Paulo */
+  runTimeHHMM         String    @default("13:00")
+  /** Dias da semana JS: 0=dom … 6=sáb. Padrão seg–sex. */
+  weekdays            Json      @default("[1,2,3,4,5]")
+  dispatchAfterScrape Boolean   @default(true)
+  lastRunAt           DateTime?
+  lastRunYmd          String?
+  lastRunStatus       String?
+  lastRunMessage      String?
+  updatedAt           DateTime  @updatedAt
+}
+
+/** Feriado / dia sem expediente da loja (America/Sao_Paulo). */
+model BusinessClosure {
+  id              String   @id @default(cuid())
+  /** YYYY-MM-DD */
+  dateYmd         String   @unique
+  label           String?
+  blockAttendance Boolean  @default(true)
+  blockBoleto     Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([dateYmd])
+}
