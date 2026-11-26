@@ -21,7 +21,7 @@ import {
 import { evolution, EvolutionClient } from "../services/whatsapp/evolution.js";
 import { activeProvider } from "../services/whatsapp/gateway.js";
 import { meta } from "../services/whatsapp/meta.js";
-import { forwardRawMetaWebhook } from "../services/whatsapp/meta-proxy.js";
+import { diagLog, forwardRawMetaWebhook, safeHost } from "../services/whatsapp/meta-proxy.js";
 import { getWhatsAppUsage, handleMetaWebhook } from "../services/whatsapp/meta-webhook.js";
 import { gupshup } from "../services/whatsapp/gupshup.js";
 import { handleGupshupWebhook } from "../services/whatsapp/gupshup-webhook.js";
@@ -327,23 +327,41 @@ whatsappRouter.post("/webhook/meta", async (req, res) => {
 
     // 3. Identifica o número que gerou o evento (display_phone_number ou phone_number_id)
     const { displayPhone, phoneNumberId } = extractMetaAccountPhone(body);
+    const eventType = msg0 ? "messages" : st0 ? "statuses" : "outro";
+    diagLog("extraido", {
+      eventType,
+      phoneNumberId: phoneNumberId || null,
+      displayPhone: displayPhone || null,
+      hasRawBody: Boolean((req as Request & { rawBody?: Buffer }).rawBody),
+    });
 
     // 4a. Rota cadastrada (ativa) por phone_number_id tem prioridade. Falha de banco => segue fluxo atual.
     const raw = (req as Request & { rawBody?: Buffer }).rawBody;
     let routeUrl: string | null = null;
+    if (!phoneNumberId || !raw) {
+      diagLog("rota: consulta ignorada", { hasPhoneNumberId: Boolean(phoneNumberId), hasRawBody: Boolean(raw) });
+    }
     if (phoneNumberId && raw) {
       try {
         const route = await prisma.whatsAppWebhookRoute.findFirst({
-          where: { phoneNumberId, active: true },
-          select: { targetUrl: true },
+          where: { phoneNumberId },
+          select: { targetUrl: true, active: true },
         });
-        routeUrl = route?.targetUrl ?? null;
+        routeUrl = route?.active ? route.targetUrl : null;
+        diagLog("rota: consulta", {
+          found: Boolean(route),
+          active: route ? route.active : null,
+          targetHost: route ? safeHost(route.targetUrl) : null,
+        });
       } catch (err) {
+        diagLog("rota: erro de banco", { error: err instanceof Error ? err.name : "erro" });
         console.error("[webhook/meta][route] falha ao consultar rota:", err instanceof Error ? err.name : "erro");
       }
     }
 
     // 4b. Regra de Roteamento Baseada no Número
+    const branch = routeUrl && raw ? "route" : displayPhone === LEGACY_META_PHONE_NUMBER ? "legacy" : "novo-saas";
+    diagLog("ramo", { branch });
     if (routeUrl && raw) {
       console.log(`[webhook/meta][route] Roteando evento do phone_number_id ${phoneNumberId} para rota cadastrada`);
       void forwardRawMetaWebhook(routeUrl, raw, req.headers);

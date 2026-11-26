@@ -10,6 +10,14 @@ CREATE TABLE IF NOT EXISTS "WhatsAppWebhookRoute" (
   "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT now()
 );
 
--- Cadastro da rota (ajustar valores):
--- INSERT INTO "WhatsAppWebhookRoute" ("phoneNumberId","displayPhone","targetUrl","active","label")
--- VALUES ('<PHONE_NUMBER_ID>','<5511999999999>','https://<ref>.supabase.co/functions/v1/whatsapp',true,'Caristeo Healthcare');
+-- ATENCAO: a tabela criada pelo Prisma (migrate/db push) NAO tem DEFAULT em "id" nem
+-- "updatedAt" (@default(uuid()) e @updatedAt sao aplicados pelo client, nao pelo banco).
+-- Por isso o INSERT manual DEVE informar id e updatedAt:
+--
+-- INSERT INTO "WhatsAppWebhookRoute" ("id","phoneNumberId","displayPhone","targetUrl","active","label","createdAt","updatedAt")
+-- VALUES (gen_random_uuid()::text,'<PHONE_NUMBER_ID>','<5511999999999>','https://<ref>.supabase.co/functions/v1/whatsapp',true,'Caristeo Healthcare',now(),now());
+--
+-- (createdAt tem DEFAULT now() no Prisma; informado aqui so por clareza.)
+-- Se preferir poder omitir id/updatedAt, aplicar:
+-- ALTER TABLE "WhatsAppWebhookRoute" ALTER COLUMN "id" SET DEFAULT gen_random_uuid()::text;
+-- ALTER TABLE "WhatsAppWebhookRoute" ALTER COLUMN "updatedAt" SET DEFAULT now();

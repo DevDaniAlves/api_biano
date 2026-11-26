@@ -459,6 +459,10 @@ model WhatsAppWebhookRoute {
   targetUrl     String
   active        Boolean  @default(true)
   label         String?
+  source        String?
+  connectedAt   DateTime?
+  deletedAt     DateTime?
+  deletedBy     String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }

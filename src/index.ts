@@ -7,6 +7,7 @@ import { env } from "./config.js";
 import { router } from "./routes.js";
 import { catalogRouter } from "./routes/catalog.js";
 import { whatsappRouter } from "./routes/whatsapp.js";
+import { routeAdminRouter } from "./routes/webhook-routes-admin.js";
 import { swaggerSpec } from "./swagger.js";
 import { expireClientIdleConversations, expireIdleConversations, expireStaleOffers } from "./services/whatsapp/flow.js";
 import { expireStaleRatings, processAutoInactivity, UPLOADS_DIR } from "./services/whatsapp/service.js";
@@ -17,6 +18,8 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const app = express();
 app.use(cors({ origin: env.CORS_ORIGIN.split(",").map((s) => s.trim()) }));
+// Rotas admin de repasse: corpo bruto proprio (assinatura HMAC), antes do parser JSON global.
+app.use("/integrations/webhook-routes", routeAdminRouter);
 app.use(
   express.json({
     limit: "12mb",
